@@ -52,6 +52,7 @@ async fn main() {
     // - send a JOIN to P announcing your presence
     //     - if you are a peer who receives a JOIN message from a peer you did not already know about,
     //         - decrement the TTL and if it is > 0, send a copy of the message (with the decremented TTL) to N randomly selected peers
+    todo!("Figure out an actual strategy for finding the initial peer");
     let initial_peer: SocketAddr = "127.0.0.1:1234".parse().unwrap();
     let sock = UdpSocket::bind("0.0.0.0:0").await.expect("Failed to bind");
     let self_addr = sock.local_addr().unwrap();
@@ -74,7 +75,10 @@ async fn main() {
 
             match msg {
                 SwimMessage::Ack(peer) => {
-                    let peer_prev = known_peers.insert(sender, None);
+                    // Insert the peer into our known_peers map with None as their "suspected since"
+                    // timestamp; if they were already in there with a suspected since timestamp,
+                    // this will reset them back to being non-suspected.
+                    let peer_prev = known_peers.insert(peer, None);
                     if let Some(peer_prev) = peer_prev {
                         if peer_prev.is_some() {
                             println!("Got ACK from previously-suspected peer {peer}");
@@ -92,7 +96,7 @@ async fn main() {
                     }
                 }
                 SwimMessage::Failed(peer) => {
-                    // note: unclear whether we should unilaterally trust this but ok
+                    // Note: unclear whether we should unilaterally trust this but ok
                     known_peers.remove(&peer);
                 }
                 SwimMessage::Join(peer, ttl) => {
@@ -165,6 +169,7 @@ async fn main() {
         //         - each recipient sends their own PING to P and forwards any ACK to the requestor
         //         - if any peer ACKs, mark P as up
         //         - if the second timeout fires, mark P as suspected and note the current timestamp
+        todo!(); // start here tomorrow
 
         // Wait until the next tick
         let max_delay = Duration::from_millis(100);
