@@ -135,6 +135,25 @@ async fn main() {
         //     - if P has been suspected for more than X seconds
         //         - remove it from the membership list
         //         - broadcast a FAILED(P) message to the mesh
+        let mut removed_peers: Vec<Peer> = vec![];
+        for (peer, maybe_suspected_since) in known_peers.iter() {
+            let Some(suspected_since) = *maybe_suspected_since else { continue };
+            if Instant::now().duration_since(suspected_since) > Duration::from_secs(60) {
+                // Give up on 'em
+                println!("Suspected peer {peer} timed out and is presumed down; removing them");
+                removed_peers.push(*peer);
+            }
+        }
+        for removed_peer in removed_peers {
+            known_peers.remove(&removed_peer);
+            for (peer, maybe_suspected_since) in known_peers.iter() {
+                // Inform non-suspect peers that removed_peer is down
+                if maybe_suspected_since.is_none() {
+                    // todo: run in parallel
+                    send_msg(*peer, SwimMessage::Failed(removed_peer)).await;
+                }
+            }
+        }
 
         // Ping a random peer
         // - pick a known peer P at random
