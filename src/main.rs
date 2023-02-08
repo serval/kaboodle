@@ -21,7 +21,7 @@ mod networking;
 type Peer = SocketAddr;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum SwimMessage {
-    Join(Peer),
+    Join(Peer, usize),
     Ping,
     PingRequest(Peer),
     Ack(Peer),
@@ -43,11 +43,9 @@ async fn send_msg(target_peer: SocketAddr, msg: SwimMessage) {
 
 #[tokio::main]
 async fn main() {
-    struct PeerInfo {
-        addr: SocketAddr,
-        suspected_since: Option<Instant>,
-    }
-    let known_peers: HashMap<SocketAddr, Option<Instant>>;
+    let mut known_peers: HashMap<SocketAddr, Option<Instant>> = HashMap::new();
+    let mut rng = thread_rng();
+    let mut curious_peers: HashMap<SocketAddr, Vec<SocketAddr>> = HashMap::new();
 
     // Bootstrap:
     // - new node has to be aware of at least one peer P
@@ -57,9 +55,11 @@ async fn main() {
     let initial_peer: SocketAddr = "127.0.0.1:1234".parse().unwrap();
     let sock = UdpSocket::bind("0.0.0.0:0").await.expect("Failed to bind");
     let self_addr = sock.local_addr().unwrap();
-    send_msg(initial_peer, SwimMessage::Join(self_addr)).await;
+    send_msg(initial_peer, SwimMessage::Join(self_addr, 3)).await;
 
     loop {
+        let tick_start = Instant::now();
+
         // Handle any incoming messages
         loop {
             let mut buf = [0u8; 1024];
@@ -71,12 +71,62 @@ async fn main() {
                 eprintln!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
+
             match msg {
-                SwimMessage::Ack(peer) => {}
-                SwimMessage::Failed(peer) => {}
-                SwimMessage::Join(peer) => {}
-                SwimMessage::Ping => {}
-                SwimMessage::PingRequest(peer) => {}
+                SwimMessage::Ack(peer) => {
+                    let peer_prev = known_peers.insert(sender, None);
+                    if let Some(peer_prev) = peer_prev {
+                        if peer_prev.is_some() {
+                            println!("Got ACK from previously-suspected peer {peer}");
+                        }
+                    } else {
+                        println!("Got ACK from not-previously-known peer {peer}");
+                    }
+
+                    if let Some(observers) = curious_peers.remove(&peer) {
+                        // Some of our peers were waiting to hear back about this ping
+                        for observer in observers {
+                            // todo: run these in parallel
+                            send_msg(observer, SwimMessage::Ack(peer)).await;
+                        }
+                    }
+                }
+                SwimMessage::Failed(peer) => {
+                    // note: unclear whether we should unilaterally trust this but ok
+                    known_peers.remove(&peer);
+                }
+                SwimMessage::Join(peer, ttl) => {
+                    if known_peers.contains_key(&peer) {
+                        break;
+                    }
+
+                    if ttl > 0 {
+                        // Tell some of our peers about this
+                        let out_msg = SwimMessage::Join(peer, ttl - 1);
+                        let other_peers = Vec::from_iter(known_peers.keys());
+
+                        for other_peer in other_peers.choose_multiple(&mut rng, 3) {
+                            // todo: run these in parallel
+                            send_msg(*other_peer.to_owned(), out_msg.clone()).await
+                        }
+                    }
+
+                    known_peers.insert(peer, None);
+                }
+                SwimMessage::Ping => {
+                    send_msg(sender, SwimMessage::Ack(self_addr)).await;
+                }
+                SwimMessage::PingRequest(peer) => {
+                    // Make a note of the fact that `sender` wants to hear whenever we get an ack
+                    // back from `peer`.
+                    let mut observers = curious_peers.remove(&peer).unwrap_or_default();
+                    if !observers.contains(&sender) {
+                        observers.push(sender);
+                    }
+                    curious_peers.insert(peer, observers);
+
+                    send_msg(peer, SwimMessage::Ping).await;
+                }
             }
         }
 
@@ -96,5 +146,13 @@ async fn main() {
         //         - each recipient sends their own PING to P and forwards any ACK to the requestor
         //         - if any peer ACKs, mark P as up
         //         - if the second timeout fires, mark P as suspected and note the current timestamp
+
+        // Wait until the next tick
+        let max_delay = Duration::from_millis(100);
+        let time_since_tick_start = Instant::now().duration_since(tick_start);
+        let required_delay = max_delay - time_since_tick_start;
+        if required_delay.as_millis() > 0 {
+            sleep(required_delay);
+        }
     }
 }
