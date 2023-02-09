@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::{Ipv4Addr, SocketAddr},
     ops::Deref,
     rc::Rc,
@@ -43,8 +43,14 @@ async fn send_msg(target_peer: SocketAddr, msg: SwimMessage) {
 
 #[tokio::main]
 async fn main() {
-    let mut known_peers: HashMap<SocketAddr, Option<Instant>> = HashMap::new();
     let mut rng = thread_rng();
+    // Maps from a peer's address to an Option<Instant>. If the Option is Some(...), that tells us
+    // when we started suspecting that the peer may be down. If the Option is None, we don't suspect
+    // it.
+    let mut known_peers: HashMap<SocketAddr, Option<Instant>> = HashMap::new();
+
+    // Maps from a peer's address to a list of other peers who would like to be informed if we get
+    // a ping ack from said peer.
     let mut curious_peers: HashMap<SocketAddr, Vec<SocketAddr>> = HashMap::new();
 
     // Bootstrap:
@@ -150,12 +156,28 @@ async fn main() {
         }
         for removed_peer in removed_peers {
             known_peers.remove(&removed_peer);
+
+            // Build a list of peers that we should tell that peer is down
+            let mut peers_to_inform: HashSet<Peer> = HashSet::new();
+
+            // First, include any of our known peers who are not themselves suspected of being down
             for (peer, maybe_suspected_since) in known_peers.iter() {
-                // Inform non-suspect peers that removed_peer is down
                 if maybe_suspected_since.is_none() {
-                    // todo: run in parallel
-                    send_msg(*peer, SwimMessage::Failed(removed_peer)).await;
+                    peers_to_inform.insert(*peer);
                 }
+            }
+
+            // Next, add any peers that have asked us to ping the down peer on their behalf
+            if let Some((_, previously_curious_peers)) = curious_peers.remove_entry(&removed_peer) {
+                for peer in previously_curious_peers {
+                    peers_to_inform.insert(peer);
+                }
+            }
+
+            // Finally, actually inform them
+            for peer in peers_to_inform {
+                // todo: run in parallel
+                send_msg(peer, SwimMessage::Failed(removed_peer)).await;
             }
         }
 
