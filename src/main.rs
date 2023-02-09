@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 use std::{
     collections::{HashMap, HashSet},
+    io::Write,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     ops::Deref,
     rc::Rc,
@@ -46,6 +47,10 @@ async fn send_msg(sock: &UdpSocket, target_peer: SocketAddr, msg: SwimMessage) {
         .expect("Failed to send");
 }
 
+fn set_terminal_title(title: &str) {
+    println!("\x1B]0;{title}\x07");
+}
+
 #[tokio::main]
 async fn main() {
     let mut rng = thread_rng();
@@ -61,6 +66,7 @@ async fn main() {
 
     let sock = UdpSocket::bind("0.0.0.0:0").await.expect("Failed to bind");
     let self_addr = sock.local_addr().unwrap();
+    set_terminal_title(&self_addr.to_string());
     println!("I am {self_addr}");
 
     // mdns is used to discover new peers; this isn't a great strategy but it will have to do for
