@@ -250,6 +250,12 @@ async fn main() {
         //         - if the second timeout fires, mark P as suspected and note the current timestamp
         // TODO: implement this :point_up:
 
+        for (peer, suspected_since) in known_peers.iter() {
+            if suspected_since.is_none() {
+                println!("Known: {peer}");
+            }
+        }
+
         // Wait until the next tick
         let max_delay = Duration::from_millis(1000);
         let time_since_tick_start = Instant::now().duration_since(tick_start);
