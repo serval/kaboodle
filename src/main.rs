@@ -10,7 +10,8 @@ use std::{
 };
 
 use async_trait::async_trait;
-use mdns::{advertise_service, discover_service};
+use mdns::{advertise_service, discover_service, get_service_instance_id};
+use mdns_sd::{ServiceDaemon, ServiceEvent};
 use networking::{find_nearest_port, my_ipv4_addrs};
 use rand::{seq::SliceRandom, thread_rng};
 use serde_derive::{Deserialize, Serialize};
@@ -37,12 +38,12 @@ impl GossipHashMap {
     async fn recv_async() {}
 }
 
-async fn send_msg(target_peer: SocketAddr, msg: SwimMessage) {
-    let sock = UdpSocket::bind("0.0.0.0:0").await.expect("Failed to bind");
+async fn send_msg(sock: &UdpSocket, target_peer: SocketAddr, msg: SwimMessage) {
+    println!("SEND [{target_peer}] {msg:?}");
     let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
-    sock.connect(target_peer).await.expect("Failed to connect");
-    sock.send(&out_bytes).await.expect("Failed to send");
-    println!("[{target_peer}] {msg:?}");
+    sock.send_to(&out_bytes, target_peer)
+        .await
+        .expect("Failed to send");
 }
 
 #[tokio::main]
@@ -62,39 +63,42 @@ async fn main() {
     let self_addr = sock.local_addr().unwrap();
     println!("I am {self_addr}");
 
-    // Bootstrap:
-    // - new node has to be aware of at least one peer P
-    // - send a JOIN to P announcing your presence
-    // todo!("Figure out an actual strategy for finding the initial peer");
-    advertise_service("swim", self_addr.port(), &Uuid::new_v4(), None).unwrap();
-    loop {
-        println!("Bootstrap: waiting to discover initial peer");
-        let self_addr_ipv4 = match self_addr.ip() {
-            IpAddr::V4(ip) => ip,
-            _ => panic!("No IPv4 address"),
-        };
+    // mdns is used to discover new peers; this isn't a great strategy but it will have to do for
+    // now. it's main shortcoming is that mdns advertisements are cached on the LAN for a while, so
+    // you end up with a lot of phantoms.
+    // todo: look into UdpSocket's set_broadcast functionality instead
+    let instance_id = Uuid::new_v4();
+    advertise_service("swim", self_addr.port(), &instance_id, None).unwrap();
 
-        let initial_peer = discover_service("_swim")
-            .await
-            .expect("Failed to find a peer");
-        let initial_peer_ip_addrs = initial_peer.get_addresses().into_iter().collect::<Vec<_>>();
-        if initial_peer_ip_addrs.contains(&&self_addr_ipv4) {
-            continue;
-        }
-        let initial_peer_socket_addr: SocketAddr =
-            format!("{}:{}", initial_peer_ip_addrs[0], initial_peer.get_port())
-                .parse()
-                .unwrap();
-
-        println!("Discovered initial peer {initial_peer_socket_addr}");
-        send_msg(initial_peer_socket_addr, SwimMessage::Join(self_addr, 3)).await;
-        println!("Sent initial join message");
-
-        break;
-    }
+    let mdns = ServiceDaemon::new().unwrap();
+    let receiver = mdns.browse(&format!("_swim._tcp.local.")).unwrap();
 
     loop {
         let tick_start = Instant::now();
+
+        // Bootstrap:
+        // - new node has to be aware of at least one peer P
+        // - send a JOIN to P announcing your presence
+        while let Ok(mdns_event) = receiver.try_recv() {
+            let ServiceEvent::ServiceResolved(info) = mdns_event else {
+                // We don't care about other events here
+                continue;
+            };
+            let Ok(peer_instance_id) = get_service_instance_id(&info) else {
+                continue;
+            };
+            if peer_instance_id == instance_id {
+                continue;
+            }
+
+            let peer_ip_addr = info.get_addresses().into_iter().collect::<Vec<_>>()[0];
+            let peer_socket_addr: SocketAddr = format!("{}:{}", peer_ip_addr, info.get_port())
+                .parse()
+                .unwrap();
+
+            println!("Discovered peer {peer_socket_addr}");
+            send_msg(&sock, peer_socket_addr, SwimMessage::Join(self_addr, 3)).await;
+        }
 
         // Handle any incoming messages
         loop {
@@ -107,6 +111,7 @@ async fn main() {
                 eprintln!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
+            println!("RECV [{sender}] {msg:?}");
 
             match msg {
                 SwimMessage::Ack(peer) => {
@@ -126,7 +131,7 @@ async fn main() {
                         // Some of our peers were waiting to hear back about this ping
                         for observer in observers {
                             // todo: run these in parallel
-                            send_msg(observer, SwimMessage::Ack(peer)).await;
+                            send_msg(&sock, observer, SwimMessage::Ack(peer)).await;
                         }
                     }
                 }
@@ -146,14 +151,14 @@ async fn main() {
 
                         for other_peer in other_peers.choose_multiple(&mut rng, 3) {
                             // todo: run these in parallel
-                            send_msg(*other_peer.to_owned(), out_msg.clone()).await
+                            send_msg(&sock, *other_peer.to_owned(), out_msg.clone()).await
                         }
                     }
 
                     known_peers.insert(peer, None);
                 }
                 SwimMessage::Ping => {
-                    send_msg(sender, SwimMessage::Ack(self_addr)).await;
+                    send_msg(&sock, sender, SwimMessage::Ack(self_addr)).await;
                 }
                 SwimMessage::PingRequest(peer) => {
                     // Make a note of the fact that `sender` wants to hear whenever we get an ack
@@ -164,7 +169,7 @@ async fn main() {
                     }
                     curious_peers.insert(peer, observers);
 
-                    send_msg(peer, SwimMessage::Ping).await;
+                    send_msg(&sock, peer, SwimMessage::Ping).await;
                 }
             }
         }
@@ -206,7 +211,7 @@ async fn main() {
             // Finally, actually inform them
             for peer in peers_to_inform {
                 // todo: run in parallel
-                send_msg(peer, SwimMessage::Failed(removed_peer)).await;
+                send_msg(&sock, peer, SwimMessage::Failed(removed_peer)).await;
             }
         }
 
@@ -222,9 +227,7 @@ async fn main() {
             // - send a PING message to P and start a timeout
             //     - if P replies with an ACK, mark the peer as up
             known_peers.insert(*target_peer, Some(Instant::now()));
-            send_msg(*target_peer, SwimMessage::Ping).await;
-        } else {
-            println!("No random peers to ping");
+            send_msg(&sock, *target_peer, SwimMessage::Ping).await;
         }
         //     - if the timeout fires without receiving an ACK:
         //         - start a second timeout
