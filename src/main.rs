@@ -1,7 +1,7 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 use std::{
     collections::{HashMap, HashSet},
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     ops::Deref,
     rc::Rc,
     sync::Arc,
@@ -10,12 +10,14 @@ use std::{
 };
 
 use async_trait::async_trait;
+use mdns::{advertise_service, discover_service};
 use networking::{find_nearest_port, my_ipv4_addrs};
 use rand::{seq::SliceRandom, thread_rng};
 use serde_derive::{Deserialize, Serialize};
 use tokio::{net::UdpSocket, sync::Mutex};
 use uuid::Uuid;
 
+mod mdns;
 mod networking;
 
 type Peer = SocketAddr;
@@ -38,12 +40,15 @@ impl GossipHashMap {
 async fn send_msg(target_peer: SocketAddr, msg: SwimMessage) {
     let sock = UdpSocket::bind("0.0.0.0:0").await.expect("Failed to bind");
     let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
+    sock.connect(target_peer).await.expect("Failed to connect");
     sock.send(&out_bytes).await.expect("Failed to send");
+    println!("[{target_peer}] {msg:?}");
 }
 
 #[tokio::main]
 async fn main() {
     let mut rng = thread_rng();
+
     // Maps from a peer's address to an Option<Instant>. If the Option is Some(...), that tells us
     // when we started suspecting that the peer may be down. If the Option is None, we don't suspect
     // it.
@@ -53,16 +58,40 @@ async fn main() {
     // a ping ack from said peer.
     let mut curious_peers: HashMap<SocketAddr, Vec<SocketAddr>> = HashMap::new();
 
+    let sock = UdpSocket::bind("0.0.0.0:0").await.expect("Failed to bind");
+    let self_addr = sock.local_addr().unwrap();
+    println!("I am {self_addr}");
+
     // Bootstrap:
     // - new node has to be aware of at least one peer P
     // - send a JOIN to P announcing your presence
-    //     - if you are a peer who receives a JOIN message from a peer you did not already know about,
-    //         - decrement the TTL and if it is > 0, send a copy of the message (with the decremented TTL) to N randomly selected peers
-    todo!("Figure out an actual strategy for finding the initial peer");
-    let initial_peer: SocketAddr = "127.0.0.1:1234".parse().unwrap();
-    let sock = UdpSocket::bind("0.0.0.0:0").await.expect("Failed to bind");
-    let self_addr = sock.local_addr().unwrap();
-    send_msg(initial_peer, SwimMessage::Join(self_addr, 3)).await;
+    // todo!("Figure out an actual strategy for finding the initial peer");
+    advertise_service("swim", self_addr.port(), &Uuid::new_v4(), None).unwrap();
+    loop {
+        println!("Bootstrap: waiting to discover initial peer");
+        let self_addr_ipv4 = match self_addr.ip() {
+            IpAddr::V4(ip) => ip,
+            _ => panic!("No IPv4 address"),
+        };
+
+        let initial_peer = discover_service("_swim")
+            .await
+            .expect("Failed to find a peer");
+        let initial_peer_ip_addrs = initial_peer.get_addresses().into_iter().collect::<Vec<_>>();
+        if initial_peer_ip_addrs.contains(&&self_addr_ipv4) {
+            continue;
+        }
+        let initial_peer_socket_addr: SocketAddr =
+            format!("{}:{}", initial_peer_ip_addrs[0], initial_peer.get_port())
+                .parse()
+                .unwrap();
+
+        println!("Discovered initial peer {initial_peer_socket_addr}");
+        send_msg(initial_peer_socket_addr, SwimMessage::Join(self_addr, 3)).await;
+        println!("Sent initial join message");
+
+        break;
+    }
 
     loop {
         let tick_start = Instant::now();
@@ -183,18 +212,30 @@ async fn main() {
 
         // Ping a random peer
         // - pick a known peer P at random
-        // - send a PING message to P and start a timeout
-        //     - if P replies with an ACK, mark the peer as up
+        let non_suspected_peers: Vec<SocketAddr> = known_peers
+            .iter()
+            .filter(|(addr, suspected_since)| suspected_since.is_none() && **addr != self_addr)
+            .map(|(addr, _)| *addr)
+            .collect();
+        if let Some(target_peer) = non_suspected_peers.choose(&mut rng) {
+            println!("Pinging random peer {target_peer}");
+            // - send a PING message to P and start a timeout
+            //     - if P replies with an ACK, mark the peer as up
+            known_peers.insert(*target_peer, Some(Instant::now()));
+            send_msg(*target_peer, SwimMessage::Ping).await;
+        } else {
+            println!("No random peers to ping");
+        }
         //     - if the timeout fires without receiving an ACK:
         //         - start a second timeout
         //         - send pick N other random peers and send each of them a PING-REQ(P) message
         //         - each recipient sends their own PING to P and forwards any ACK to the requestor
         //         - if any peer ACKs, mark P as up
         //         - if the second timeout fires, mark P as suspected and note the current timestamp
-        todo!(); // start here tomorrow
+        // TODO: implement this :point_up:
 
         // Wait until the next tick
-        let max_delay = Duration::from_millis(100);
+        let max_delay = Duration::from_millis(1000);
         let time_since_tick_start = Instant::now().duration_since(tick_start);
         let required_delay = max_delay - time_since_tick_start;
         if required_delay.as_millis() > 0 {
