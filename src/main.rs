@@ -1,27 +1,21 @@
-#![allow(dead_code, unused_imports, unused_variables)]
-
 // todo
 // - investigate broadcast UDP instead of mdns
-// - send known_peers list in response to Join messages
+// - send known_peers list in response to Join messages, maybe? this is tricky because we can't
+//   send an arbitrarily large amount of data. perhaps we could send as many fit into 1024 bytes?
 
 use std::{
     collections::{HashMap, HashSet},
-    io::Write,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    ops::Deref,
-    rc::Rc,
-    sync::Arc,
+    net::SocketAddr,
     thread::sleep,
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
-use mdns::{advertise_service, discover_service, get_service_instance_id};
+use mdns::{advertise_service, get_service_instance_id};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
-use networking::{find_nearest_port, my_ipv4_addrs};
+
 use rand::{seq::SliceRandom, thread_rng};
 use serde_derive::{Deserialize, Serialize};
-use tokio::{net::UdpSocket, sync::Mutex};
+use tokio::net::UdpSocket;
 use uuid::Uuid;
 
 mod mdns;
@@ -101,7 +95,7 @@ async fn main() {
     advertise_service("swim", self_addr.port(), &instance_id, None).unwrap();
 
     let mdns = ServiceDaemon::new().unwrap();
-    let receiver = mdns.browse(&format!("_swim._tcp.local.")).unwrap();
+    let receiver = mdns.browse("_swim._tcp.local.").unwrap();
 
     loop {
         let tick_start = Instant::now();
@@ -122,7 +116,7 @@ async fn main() {
                 continue;
             }
 
-            let peer_ip_addr = info.get_addresses().into_iter().collect::<Vec<_>>()[0];
+            let peer_ip_addr = info.get_addresses().iter().collect::<Vec<_>>()[0];
             let peer_socket_addr: SocketAddr = format!("{}:{}", peer_ip_addr, info.get_port())
                 .parse()
                 .unwrap();
@@ -134,7 +128,7 @@ async fn main() {
         // Handle any incoming messages
         loop {
             let mut buf = [0u8; 1024];
-            let Ok((len, sender)) = sock.try_recv_from(&mut buf) else {
+            let Ok((_len, sender)) = sock.try_recv_from(&mut buf) else {
                 // No more messages for now
                 break;
             };
@@ -150,17 +144,16 @@ async fn main() {
                     // timestamp; if they were already in there with a suspected since timestamp,
                     // this will reset them back to being non-suspected.
                     let peer_prev = known_peers.insert(peer, PeerState::Known);
-                    if let Some(peer_prev) = peer_prev {
-                        match peer_prev {
-                            PeerState::WaitingForPing(instant)
-                            | PeerState::WaitingForIndirectPing(instant) => {
-                                println!("Got ACK from previously-suspected peer {peer}");
-                            }
-                            _ => {}
-                        };
-                    } else {
-                        println!("Got ACK from not-previously-known peer {peer}");
-                    }
+                    match peer_prev {
+                        Some(PeerState::WaitingForPing(_))
+                        | Some(PeerState::WaitingForIndirectPing(_)) => {
+                            println!("Got ACK from previously-suspected peer {peer}");
+                        }
+                        None => {
+                            println!("Got ACK from not-previously-known peer {peer}");
+                        }
+                        _ => {}
+                    };
 
                     if let Some(observers) = curious_peers.remove(&peer) {
                         // Some of our peers were waiting to hear back about this ping
@@ -224,7 +217,7 @@ async fn main() {
         let mut indirectly_pinged_peers: Vec<Peer> = vec![];
         let non_suspected_peers = known_peers
             .iter()
-            .filter(|(peer, peer_state)| **peer_state == PeerState::Known)
+            .filter(|(_, peer_state)| **peer_state == PeerState::Known)
             .map(|(peer, _)| *peer)
             .collect::<Vec<SocketAddr>>();
         for (peer, peer_state) in known_peers.iter() {
