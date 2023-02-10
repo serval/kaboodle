@@ -1,10 +1,8 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 
 // todo
-// - implement indirect pings
 // - investigate broadcast UDP instead of mdns
 // - send known_peers list in response to Join messages
-// - refactor what we're storing in the known_peers list to better track peer state -- use an enum
 
 use std::{
     collections::{HashMap, HashSet},
