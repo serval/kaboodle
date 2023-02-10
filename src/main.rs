@@ -10,16 +10,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use mdns::{advertise_service, get_service_instance_id};
-use mdns_sd::{ServiceDaemon, ServiceEvent};
+use networking::my_ipv4_addrs;
 
 use rand::{seq::SliceRandom, thread_rng};
 use serde_derive::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use tokio::net::UdpSocket;
-use uuid::Uuid;
 
-mod mdns;
 mod networking;
 
 type Peer = SocketAddr;
@@ -84,7 +81,10 @@ async fn main() {
     let mut curious_peers: HashMap<SocketAddr, Vec<SocketAddr>> = HashMap::new();
 
     // Set up our main communications socket
-    let sock = UdpSocket::bind("0.0.0.0:0").await.expect("Failed to bind");
+    let ip = my_ipv4_addrs()[0];
+    let sock = UdpSocket::bind(format!("{ip}:0"))
+        .await
+        .expect("Failed to bind");
     let self_addr = sock.local_addr().unwrap();
 
     // Set up our broadcast communications socket
@@ -102,13 +102,6 @@ async fn main() {
     set_terminal_title(&self_addr.to_string());
     println!("I am {self_addr}");
 
-    // mdns is used to discover new peers; this isn't a great strategy but it will have to do for
-    // now. it's main shortcoming is that mdns advertisements are cached on the LAN for a while, so
-    // you end up with a lot of phantoms.
-    // todo: look into UdpSocket's set_broadcast functionality instead
-    let instance_id = Uuid::new_v4();
-    advertise_service("swim", self_addr.port(), &instance_id, None).unwrap();
-
     // let mdns = ServiceDaemon::new().unwrap();
     // let receiver = mdns.browse("_swim._tcp.local.").unwrap();
 
@@ -121,7 +114,6 @@ async fn main() {
 
     loop {
         let tick_start = Instant::now();
-        println!(".");
 
         // Bootstrap:
         /*
@@ -154,7 +146,6 @@ async fn main() {
             let mut buf = [0; 1024];
             let Ok((_len, sender)) = broadcast_sock.try_recv_from(&mut buf) else {
                 // Nothing to receive
-                println!("_");
                 break;
             };
             if sender == self_addr {
