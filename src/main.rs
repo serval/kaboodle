@@ -1,6 +1,5 @@
 // todo
-// - send known_peers list in response to Join messages, maybe? this is tricky because we can't
-//   send an arbitrarily large amount of data. perhaps we could send as many fit into 1024 bytes?
+// - proper error handling
 
 use std::{
     collections::HashMap,
