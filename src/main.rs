@@ -15,6 +15,7 @@ use mdns_sd::{ServiceDaemon, ServiceEvent};
 
 use rand::{seq::SliceRandom, thread_rng};
 use serde_derive::{Deserialize, Serialize};
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use tokio::net::UdpSocket;
 use uuid::Uuid;
 
@@ -24,7 +25,7 @@ mod networking;
 type Peer = SocketAddr;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum SwimMessage {
-    Join(Peer, usize),
+    Join(Peer),
     Ping,
     PingRequest(Peer),
     Ack(Peer),
@@ -82,8 +83,22 @@ async fn main() {
     // a ping ack from said peer.
     let mut curious_peers: HashMap<SocketAddr, Vec<SocketAddr>> = HashMap::new();
 
+    // Set up our main communications socket
     let sock = UdpSocket::bind("0.0.0.0:0").await.expect("Failed to bind");
     let self_addr = sock.local_addr().unwrap();
+
+    // Set up our broadcast communications socket
+    let broadcast_addr: SocketAddr = "0.0.0.0:7475".parse().unwrap();
+    let broadcast_sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+    broadcast_sock.set_broadcast(true).unwrap();
+    broadcast_sock.set_reuse_address(true).unwrap();
+    broadcast_sock.set_reuse_port(true).unwrap();
+    broadcast_sock
+        .bind(&SockAddr::from(broadcast_addr))
+        .expect("Failed to bind for broadcast");
+    let broadcast_sock: std::net::UdpSocket = broadcast_sock.into();
+    let broadcast_sock = UdpSocket::from_std(broadcast_sock).unwrap();
+
     set_terminal_title(&self_addr.to_string());
     println!("I am {self_addr}");
 
@@ -94,14 +109,22 @@ async fn main() {
     let instance_id = Uuid::new_v4();
     advertise_service("swim", self_addr.port(), &instance_id, None).unwrap();
 
-    let mdns = ServiceDaemon::new().unwrap();
-    let receiver = mdns.browse("_swim._tcp.local.").unwrap();
+    // let mdns = ServiceDaemon::new().unwrap();
+    // let receiver = mdns.browse("_swim._tcp.local.").unwrap();
+
+    send_msg(
+        &broadcast_sock,
+        &broadcast_addr,
+        &SwimMessage::Join(self_addr),
+    )
+    .await;
 
     loop {
         let tick_start = Instant::now();
         println!(".");
 
         // Bootstrap:
+        /*
         // - new node has to be aware of at least one peer P
         // - send a JOIN to P announcing your presence
         while let Ok(mdns_event) = receiver.try_recv() {
@@ -122,7 +145,37 @@ async fn main() {
                 .unwrap();
 
             println!("Discovered peer {peer_socket_addr}");
-            send_msg(&sock, &peer_socket_addr, &SwimMessage::Join(self_addr, 3)).await;
+            send_msg(&sock, &broadcast_addr, &SwimMessage::Join(self_addr)).await;
+        }
+        */
+
+        // Handle any broadcast messages
+        loop {
+            let mut buf = [0; 1024];
+            let Ok((_len, sender)) = broadcast_sock.try_recv_from(&mut buf) else {
+                // Nothing to receive
+                println!("_");
+                break;
+            };
+            if sender == self_addr {
+                // Ignore our own broadcasts
+                continue;
+            };
+            let Ok(msg) = bincode::deserialize::<SwimMessage>(&buf) else {
+                eprintln!("Failed to deserialize bytes: {buf:?}");
+                continue;
+            };
+            println!("CAST [{sender}] {msg:?}");
+            match msg {
+                SwimMessage::Join(peer) => {
+                    println!("Got a join from {peer}");
+                    known_peers.insert(peer, PeerState::Known);
+                }
+                _ => {
+                    println!("Got unexpected broadcast {msg:?}");
+                }
+            }
+            // TODO if we receive a ping, add them to the known_peers list
         }
 
         // Handle any incoming messages
@@ -168,27 +221,9 @@ async fn main() {
                     println!("Removing peer that we were told has failed {peer}");
                     known_peers.remove(&peer);
                 }
-                SwimMessage::Join(peer, ttl) => {
-                    println!("Got a join from {peer} with ttl {ttl}");
-                    if known_peers.contains_key(&peer) {
-                        break;
-                    }
-
-                    known_peers.insert(peer, PeerState::Known);
-
-                    if ttl > 0 {
-                        // Tell some of our peers about this
-                        let out_msg = SwimMessage::Join(peer, ttl - 1);
-                        let other_peers = Vec::from_iter(known_peers.keys());
-
-                        for other_peer in other_peers.choose_multiple(&mut rng, 3) {
-                            // todo: run these in parallel
-                            send_msg(&sock, other_peer, &out_msg).await
-                        }
-                    }
-                }
                 SwimMessage::Ping => {
                     send_msg(&sock, &sender, &SwimMessage::Ack(self_addr)).await;
+                    // known_peers.insert(sender, PeerState::Known);
                 }
                 SwimMessage::PingRequest(peer) => {
                     // Make a note of the fact that `sender` wants to hear whenever we get an ack
@@ -200,6 +235,9 @@ async fn main() {
                     curious_peers.insert(peer, observers);
 
                     send_msg(&sock, &peer, &SwimMessage::Ping).await;
+                }
+                _ => {
+                    println!("Received unexpected message: {msg:?}");
                 }
             }
         }

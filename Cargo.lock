@@ -118,6 +118,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_derive",
+ "socket2",
  "tokio",
  "uuid",
 ]
