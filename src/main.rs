@@ -1,5 +1,4 @@
 // todo
-// - investigate broadcast UDP instead of mdns
 // - send known_peers list in response to Join messages, maybe? this is tricky because we can't
 //   send an arbitrarily large amount of data. perhaps we could send as many fit into 1024 bytes?
 
@@ -27,9 +26,9 @@ enum SwimMessage {
     PingRequest(Peer),
     Ack(Peer),
     Failed(Peer),
+    KnownPeers(Vec<Peer>),
 }
 
-// todo: refactor to &borrow
 async fn send_msg(sock: &UdpSocket, target_peer: &SocketAddr, msg: &SwimMessage) {
     println!("SEND [{target_peer}] {msg:?}");
     let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
@@ -74,36 +73,39 @@ async fn main() {
 
     // Maps from a peer's address to the known state of that peer. See PeerState for a description
     // of the individual states.
-    let mut known_peers: HashMap<SocketAddr, PeerState> = HashMap::new();
+    let mut known_peers: HashMap<Peer, PeerState> = HashMap::new();
 
     // Maps from a peer's address to a list of other peers who would like to be informed if we get
     // a ping ack from said peer.
-    let mut curious_peers: HashMap<SocketAddr, Vec<SocketAddr>> = HashMap::new();
+    let mut curious_peers: HashMap<Peer, Vec<Peer>> = HashMap::new();
 
     // Set up our main communications socket
-    let ip = my_ipv4_addrs()[0];
-    let sock = UdpSocket::bind(format!("{ip}:0"))
-        .await
-        .expect("Failed to bind");
+
+    let sock = {
+        let ip = my_ipv4_addrs()[0];
+        UdpSocket::bind(format!("{ip}:0"))
+            .await
+            .expect("Failed to bind")
+    };
     let self_addr = sock.local_addr().unwrap();
 
     // Set up our broadcast communications socket
     let broadcast_addr: SocketAddr = "0.0.0.0:7475".parse().unwrap();
-    let broadcast_sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
-    broadcast_sock.set_broadcast(true).unwrap();
-    broadcast_sock.set_reuse_address(true).unwrap();
-    broadcast_sock.set_reuse_port(true).unwrap();
-    broadcast_sock
-        .bind(&SockAddr::from(broadcast_addr))
-        .expect("Failed to bind for broadcast");
-    let broadcast_sock: std::net::UdpSocket = broadcast_sock.into();
-    let broadcast_sock = UdpSocket::from_std(broadcast_sock).unwrap();
+    let broadcast_sock = {
+        let broadcast_sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
+        broadcast_sock.set_broadcast(true).unwrap();
+        broadcast_sock.set_nonblocking(true).unwrap();
+        broadcast_sock.set_reuse_address(true).unwrap();
+        broadcast_sock.set_reuse_port(true).unwrap();
+        broadcast_sock
+            .bind(&SockAddr::from(broadcast_addr))
+            .expect("Failed to bind for broadcast");
+        let broadcast_sock: std::net::UdpSocket = broadcast_sock.into();
+        UdpSocket::from_std(broadcast_sock).unwrap()
+    };
 
     set_terminal_title(&self_addr.to_string());
     println!("I am {self_addr}");
-
-    // let mdns = ServiceDaemon::new().unwrap();
-    // let receiver = mdns.browse("_swim._tcp.local.").unwrap();
 
     send_msg(
         &broadcast_sock,
@@ -115,33 +117,9 @@ async fn main() {
     loop {
         let tick_start = Instant::now();
 
-        // Bootstrap:
-        /*
-        // - new node has to be aware of at least one peer P
-        // - send a JOIN to P announcing your presence
-        while let Ok(mdns_event) = receiver.try_recv() {
-            let ServiceEvent::ServiceResolved(info) = mdns_event else {
-                // We don't care about other events here
-                continue;
-            };
-            let Ok(peer_instance_id) = get_service_instance_id(&info) else {
-                continue;
-            };
-            if peer_instance_id == instance_id {
-                continue;
-            }
-
-            let peer_ip_addr = info.get_addresses().iter().collect::<Vec<_>>()[0];
-            let peer_socket_addr: SocketAddr = format!("{}:{}", peer_ip_addr, info.get_port())
-                .parse()
-                .unwrap();
-
-            println!("Discovered peer {peer_socket_addr}");
-            send_msg(&sock, &broadcast_addr, &SwimMessage::Join(self_addr)).await;
-        }
-        */
-
         // Handle any broadcast messages
+        // Note that, at least on macOS, if you run multiple copies of this app simultaneously, only
+        // one instance will actually receive broadcast packets.
         loop {
             let mut buf = [0; 1024];
             let Ok((_len, sender)) = broadcast_sock.try_recv_from(&mut buf) else {
@@ -161,12 +139,34 @@ async fn main() {
                 SwimMessage::Join(peer) => {
                     println!("Got a join from {peer}");
                     known_peers.insert(peer, PeerState::Known);
+
+                    // Send them as many of our known peers as possible
+                    // This is a gross hack: we keep serializing a KnownPeers message with the
+                    // contents of `other_peers`, dropping one of them until it's small enough to
+                    // fit. I am sure there's a less stupid way of accomplishing this.
+                    let mut other_peers: Vec<Peer> = known_peers
+                        .iter()
+                        .filter(|(other_peer, _)| **other_peer != peer)
+                        .map(|(other_peer, _)| *other_peer)
+                        .collect();
+
+                    while !other_peers.is_empty()
+                        && bincode::serialize(&SwimMessage::KnownPeers(other_peers.clone()))
+                            .unwrap()
+                            .len()
+                            > 1024
+                    {
+                        other_peers.pop();
+                    }
+
+                    if !other_peers.is_empty() {
+                        send_msg(&sock, &peer, &SwimMessage::KnownPeers(other_peers)).await;
+                    }
                 }
                 _ => {
                     println!("Got unexpected broadcast {msg:?}");
                 }
             }
-            // TODO if we receive a ping, add them to the known_peers list
         }
 
         // Handle any incoming messages
@@ -212,9 +212,16 @@ async fn main() {
                     println!("Removing peer that we were told has failed {peer}");
                     known_peers.remove(&peer);
                 }
+                SwimMessage::KnownPeers(peers) => {
+                    for peer in peers {
+                        if !known_peers.contains_key(&peer) {
+                            known_peers.insert(peer, PeerState::Known);
+                        }
+                    }
+                }
                 SwimMessage::Ping => {
                     send_msg(&sock, &sender, &SwimMessage::Ack(self_addr)).await;
-                    // known_peers.insert(sender, PeerState::Known);
+                    known_peers.insert(sender, PeerState::Known);
                 }
                 SwimMessage::PingRequest(peer) => {
                     // Make a note of the fact that `sender` wants to hear whenever we get an ack
@@ -248,7 +255,7 @@ async fn main() {
             .iter()
             .filter(|(_, peer_state)| **peer_state == PeerState::Known)
             .map(|(peer, _)| *peer)
-            .collect::<Vec<SocketAddr>>();
+            .collect::<Vec<Peer>>();
         for (peer, peer_state) in known_peers.iter() {
             match peer_state {
                 PeerState::WaitingForPing(ping_sent) => {
@@ -257,7 +264,7 @@ async fn main() {
                         continue;
                     };
 
-                    let indirect_ping_peers: Vec<&SocketAddr> = non_suspected_peers
+                    let indirect_ping_peers: Vec<&Peer> = non_suspected_peers
                         .choose_multiple(&mut rng, NUM_INDIRECT_PING_PEERS)
                         .collect();
 
@@ -321,7 +328,7 @@ async fn main() {
 
         // Ping a random peer
         // - pick a known peer P at random
-        let non_suspected_peers: Vec<SocketAddr> = known_peers
+        let non_suspected_peers: Vec<Peer> = known_peers
             .iter()
             .filter(|(addr, peer_state)| **peer_state == PeerState::Known && **addr != self_addr)
             .map(|(addr, _)| *addr)
