@@ -1,0 +1,12 @@
+layout {
+    pane split_direction="vertical" {
+        pane {
+            command "cargo"
+            args "run"
+        }
+        pane {
+            command "cargo"
+            args "run"
+        }
+    }
+}

@@ -5,3 +5,6 @@ help:
 # Run several copies of the app in a 2x2 grid
 run:
     cargo build && zellij --layout 2x2-layout.kdl
+
+run2:
+    cargo build && zellij --layout 2x1-layout.kdl
