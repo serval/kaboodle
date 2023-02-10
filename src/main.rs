@@ -58,14 +58,30 @@ fn set_terminal_title(title: &str) {
     println!("\x1B]0;{title}\x07");
 }
 
+const PING_TIMEOUT_MS: usize = 5000;
+
+#[derive(Debug, Eq, PartialEq)]
+enum PeerState {
+    /// Peer is known to us and believed to be up.
+    Known,
+
+    /// We have sent a ping and are waiting for the response. We keep track of when we sent the ping
+    /// and will send an indirect ping if more than PING_TIMEOUT_MS ms elapse.
+    WaitingForPing(Instant),
+
+    /// We have sent indirect ping requests to one or more other peers to see if any of them are
+    /// able to communicate with this peer. We keep track of when we sent the ping request and will
+    /// drop this peer if more than PING_TIMEOUT_MS ms elapses.
+    WaitingForIndirectPing(Instant),
+}
+
 #[tokio::main]
 async fn main() {
     let mut rng = thread_rng();
 
-    // Maps from a peer's address to an Option<Instant>. If the Option is Some(...), that tells us
-    // when we started suspecting that the peer may be down. If the Option is None, we don't suspect
-    // it.
-    let mut known_peers: HashMap<SocketAddr, Option<Instant>> = HashMap::new();
+    // Maps from a peer's address to the known state of that peer. See PeerState for a description
+    // of the individual states.
+    let mut known_peers: HashMap<SocketAddr, PeerState> = HashMap::new();
 
     // Maps from a peer's address to a list of other peers who would like to be informed if we get
     // a ping ack from said peer.
@@ -131,11 +147,15 @@ async fn main() {
                     // Insert the peer into our known_peers map with None as their "suspected since"
                     // timestamp; if they were already in there with a suspected since timestamp,
                     // this will reset them back to being non-suspected.
-                    let peer_prev = known_peers.insert(peer, None);
+                    let peer_prev = known_peers.insert(peer, PeerState::Known);
                     if let Some(peer_prev) = peer_prev {
-                        if peer_prev.is_some() {
-                            println!("Got ACK from previously-suspected peer {peer}");
-                        }
+                        match peer_prev {
+                            PeerState::WaitingForPing(instant)
+                            | PeerState::WaitingForIndirectPing(instant) => {
+                                println!("Got ACK from previously-suspected peer {peer}");
+                            }
+                            _ => {}
+                        };
                     } else {
                         println!("Got ACK from not-previously-known peer {peer}");
                     }
@@ -168,7 +188,7 @@ async fn main() {
                         }
                     }
 
-                    known_peers.insert(peer, None);
+                    known_peers.insert(peer, PeerState::Known);
                 }
                 SwimMessage::Ping => {
                     send_msg(&sock, sender, SwimMessage::Ack(self_addr)).await;
@@ -193,12 +213,23 @@ async fn main() {
         //         - remove it from the membership list
         //         - broadcast a FAILED(P) message to the mesh
         let mut removed_peers: Vec<Peer> = vec![];
-        for (peer, maybe_suspected_since) in known_peers.iter() {
-            let Some(suspected_since) = *maybe_suspected_since else { continue };
-            if Instant::now().duration_since(suspected_since) > Duration::from_secs(60) {
-                // Give up on 'em
-                println!("Suspected peer {peer} timed out and is presumed down; removing them");
-                removed_peers.push(*peer);
+        for (peer, peer_state) in known_peers.iter() {
+            match peer_state {
+                PeerState::WaitingForPing(suspected_since) => {
+                    // todo: implement indirect pings here
+                    if Instant::now().duration_since(*suspected_since) > Duration::from_secs(10) {
+                        // Give up on 'em
+                        println!(
+                            "Suspected peer {peer} timed out and is presumed down; removing them"
+                        );
+                        removed_peers.push(*peer);
+                    }
+                }
+                PeerState::WaitingForIndirectPing(suspected_since) => {
+                    // todo: implement indirect pings and then make this be the arm where we remove
+                    // the peer
+                }
+                _ => {}
             }
         }
         for removed_peer in removed_peers {
@@ -208,10 +239,13 @@ async fn main() {
             let mut peers_to_inform: HashSet<Peer> = HashSet::new();
 
             // First, include any of our known peers who are not themselves suspected of being down
-            for (peer, maybe_suspected_since) in known_peers.iter() {
-                if maybe_suspected_since.is_none() {
-                    peers_to_inform.insert(*peer);
-                }
+            for (peer, peer_state) in known_peers.iter() {
+                match peer_state {
+                    PeerState::Known => {
+                        peers_to_inform.insert(*peer);
+                    }
+                    _ => {}
+                };
             }
 
             // Next, add any peers that have asked us to ping the down peer on their behalf
@@ -232,14 +266,14 @@ async fn main() {
         // - pick a known peer P at random
         let non_suspected_peers: Vec<SocketAddr> = known_peers
             .iter()
-            .filter(|(addr, suspected_since)| suspected_since.is_none() && **addr != self_addr)
+            .filter(|(addr, peer_state)| **peer_state == PeerState::Known && **addr != self_addr)
             .map(|(addr, _)| *addr)
             .collect();
         if let Some(target_peer) = non_suspected_peers.choose(&mut rng) {
             println!("Pinging random peer {target_peer}");
             // - send a PING message to P and start a timeout
             //     - if P replies with an ACK, mark the peer as up
-            known_peers.insert(*target_peer, Some(Instant::now()));
+            known_peers.insert(*target_peer, PeerState::WaitingForPing(Instant::now()));
             send_msg(&sock, *target_peer, SwimMessage::Ping).await;
         }
         //     - if the timeout fires without receiving an ACK:
@@ -250,10 +284,12 @@ async fn main() {
         //         - if the second timeout fires, mark P as suspected and note the current timestamp
         // TODO: implement this :point_up:
 
-        for (peer, suspected_since) in known_peers.iter() {
-            if suspected_since.is_none() {
-                println!("Known: {peer}");
+        if !known_peers.is_empty() {
+            println!("+= Peers: ========");
+            for (peer, peer_state) in known_peers.iter() {
+                println!("|| {peer}:\t{peer_state:?}");
             }
+            println!("+=================");
         }
 
         // Wait until the next tick
