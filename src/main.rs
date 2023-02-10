@@ -32,7 +32,7 @@ enum SwimMessage {
 }
 
 // todo: refactor to &borrow
-async fn send_msg(sock: &UdpSocket, target_peer: SocketAddr, msg: SwimMessage) {
+async fn send_msg(sock: &UdpSocket, target_peer: &SocketAddr, msg: &SwimMessage) {
     println!("SEND [{target_peer}] {msg:?}");
     let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
     sock.send_to(&out_bytes, target_peer)
@@ -122,7 +122,7 @@ async fn main() {
                 .unwrap();
 
             println!("Discovered peer {peer_socket_addr}");
-            send_msg(&sock, peer_socket_addr, SwimMessage::Join(self_addr, 3)).await;
+            send_msg(&sock, &peer_socket_addr, &SwimMessage::Join(self_addr, 3)).await;
         }
 
         // Handle any incoming messages
@@ -159,7 +159,7 @@ async fn main() {
                         // Some of our peers were waiting to hear back about this ping
                         for observer in observers {
                             // todo: run these in parallel
-                            send_msg(&sock, observer, SwimMessage::Ack(peer)).await;
+                            send_msg(&sock, &observer, &SwimMessage::Ack(peer)).await;
                         }
                     }
                 }
@@ -183,12 +183,12 @@ async fn main() {
 
                         for other_peer in other_peers.choose_multiple(&mut rng, 3) {
                             // todo: run these in parallel
-                            send_msg(&sock, *other_peer.to_owned(), out_msg.clone()).await
+                            send_msg(&sock, other_peer, &out_msg).await
                         }
                     }
                 }
                 SwimMessage::Ping => {
-                    send_msg(&sock, sender, SwimMessage::Ack(self_addr)).await;
+                    send_msg(&sock, &sender, &SwimMessage::Ack(self_addr)).await;
                 }
                 SwimMessage::PingRequest(peer) => {
                     // Make a note of the fact that `sender` wants to hear whenever we get an ack
@@ -199,7 +199,7 @@ async fn main() {
                     }
                     curious_peers.insert(peer, observers);
 
-                    send_msg(&sock, peer, SwimMessage::Ping).await;
+                    send_msg(&sock, &peer, &SwimMessage::Ping).await;
                 }
             }
         }
@@ -246,7 +246,7 @@ async fn main() {
                     println!("Asking indirect peers");
                     for indirect_ping_peer in indirect_ping_peers {
                         // todo: run in parallel
-                        send_msg(&sock, *indirect_ping_peer, msg.clone()).await;
+                        send_msg(&sock, indirect_ping_peer, &msg).await;
                     }
                 }
                 PeerState::WaitingForIndirectPing(ping_sent) => {
@@ -286,7 +286,7 @@ async fn main() {
             // Finally, actually inform them
             for peer in peers_to_inform {
                 // todo: run in parallel
-                send_msg(&sock, peer, SwimMessage::Failed(removed_peer)).await;
+                send_msg(&sock, &peer, &SwimMessage::Failed(removed_peer)).await;
             }
         }
 
@@ -304,7 +304,7 @@ async fn main() {
             known_peers.insert(*target_peer, PeerState::WaitingForPing(Instant::now()));
 
             // Comment out the following line to test indirect pinging
-            send_msg(&sock, *target_peer, SwimMessage::Ping).await;
+            send_msg(&sock, target_peer, &SwimMessage::Ping).await;
         }
 
         // Dump our list of peers out
