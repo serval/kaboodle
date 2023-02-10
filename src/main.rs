@@ -3,12 +3,14 @@
 //   send an arbitrarily large amount of data. perhaps we could send as many fit into 1024 bytes?
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
+    fmt::Display,
     net::SocketAddr,
     thread::sleep,
     time::{Duration, Instant},
 };
 
+use dotenvy::dotenv;
 use networking::my_ipv4_addrs;
 
 use rand::{seq::SliceRandom, thread_rng};
@@ -30,7 +32,7 @@ enum SwimMessage {
 }
 
 async fn send_msg(sock: &UdpSocket, target_peer: &SocketAddr, msg: &SwimMessage) {
-    println!("SEND [{target_peer}] {msg:?}");
+    log::info!("SEND [{target_peer}] {msg:?}");
     let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
     sock.send_to(&out_bytes, target_peer)
         .await
@@ -67,8 +69,26 @@ enum PeerState {
     WaitingForIndirectPing(Instant),
 }
 
+impl Display for PeerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            PeerState::Known => "Known",
+            PeerState::WaitingForPing(_) => "WaitingForPing",
+            PeerState::WaitingForIndirectPing(_) => "WaitingForIndirectPing",
+        };
+        write!(f, "{str}")?;
+        Ok(())
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    let did_find_dotenv = dotenv().ok().is_some();
+    if cfg!(debug_assertions) && !did_find_dotenv {
+        log::info!("Debug-only warning: no .env file found to configure logging; all logging will be disabled. Add RUST_LOG=info to .env to see logging.");
+    }
+    env_logger::init();
+
     let mut rng = thread_rng();
 
     // Maps from a peer's address to the known state of that peer. See PeerState for a description
@@ -80,7 +100,6 @@ async fn main() {
     let mut curious_peers: HashMap<Peer, Vec<Peer>> = HashMap::new();
 
     // Set up our main communications socket
-
     let sock = {
         let ip = my_ipv4_addrs()[0];
         UdpSocket::bind(format!("{ip}:0"))
@@ -105,8 +124,9 @@ async fn main() {
     };
 
     set_terminal_title(&self_addr.to_string());
-    println!("I am {self_addr}");
+    log::info!("I am {self_addr}");
 
+    // Broadcast our existence
     send_msg(
         &broadcast_sock,
         &broadcast_addr,
@@ -131,40 +151,37 @@ async fn main() {
                 continue;
             };
             let Ok(msg) = bincode::deserialize::<SwimMessage>(&buf) else {
-                eprintln!("Failed to deserialize bytes: {buf:?}");
+                log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
-            println!("CAST [{sender}] {msg:?}");
+            log::info!("CAST [{sender}] {msg:?}");
             match msg {
+                SwimMessage::Failed(peer) => {
+                    // Note: unclear whether we should unilaterally trust this but ok
+                    log::info!("Removing peer that we were told has failed {peer}");
+                    known_peers.remove(&peer);
+                }
                 SwimMessage::Join(peer) => {
-                    println!("Got a join from {peer}");
+                    log::info!("Got a join from {peer}");
                     known_peers.insert(peer, PeerState::Known);
 
-                    // Send them as many of our known peers as possible
-                    // This is a gross hack: we keep serializing a KnownPeers message with the
-                    // contents of `other_peers`, dropping one of them until it's small enough to
-                    // fit. I am sure there's a less stupid way of accomplishing this.
-                    let mut other_peers: Vec<Peer> = known_peers
+                    // Send a list of known peers to the newcomer
+                    // todo: we might need to only send a subset in order to keep packet size down;
+                    // that is a problem for another day.
+                    let other_peers: Vec<Peer> = known_peers
                         .iter()
+                        // todo: maybe exclude peers in the  WaitingForIndirectPing state, since
+                        // they are suspect.
                         .filter(|(other_peer, _)| **other_peer != peer)
                         .map(|(other_peer, _)| *other_peer)
                         .collect();
-
-                    while !other_peers.is_empty()
-                        && bincode::serialize(&SwimMessage::KnownPeers(other_peers.clone()))
-                            .unwrap()
-                            .len()
-                            > 1024
-                    {
-                        other_peers.pop();
-                    }
 
                     if !other_peers.is_empty() {
                         send_msg(&sock, &peer, &SwimMessage::KnownPeers(other_peers)).await;
                     }
                 }
                 _ => {
-                    println!("Got unexpected broadcast {msg:?}");
+                    log::info!("Got unexpected broadcast {msg:?}");
                 }
             }
         }
@@ -177,27 +194,17 @@ async fn main() {
                 break;
             };
             let Ok(msg) = bincode::deserialize::<SwimMessage>(&buf) else {
-                eprintln!("Failed to deserialize bytes: {buf:?}");
+                log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
-            println!("RECV [{sender}] {msg:?}");
+            log::info!("RECV [{sender}] {msg:?}");
 
             match msg {
                 SwimMessage::Ack(peer) => {
                     // Insert the peer into our known_peers map with None as their "suspected since"
                     // timestamp; if they were already in there with a suspected since timestamp,
                     // this will reset them back to being non-suspected.
-                    let peer_prev = known_peers.insert(peer, PeerState::Known);
-                    match peer_prev {
-                        Some(PeerState::WaitingForPing(_))
-                        | Some(PeerState::WaitingForIndirectPing(_)) => {
-                            println!("Got ACK from previously-suspected peer {peer}");
-                        }
-                        None => {
-                            println!("Got ACK from not-previously-known peer {peer}");
-                        }
-                        _ => {}
-                    };
+                    known_peers.insert(peer, PeerState::Known);
 
                     if let Some(observers) = curious_peers.remove(&peer) {
                         // Some of our peers were waiting to hear back about this ping
@@ -207,16 +214,9 @@ async fn main() {
                         }
                     }
                 }
-                SwimMessage::Failed(peer) => {
-                    // Note: unclear whether we should unilaterally trust this but ok
-                    println!("Removing peer that we were told has failed {peer}");
-                    known_peers.remove(&peer);
-                }
                 SwimMessage::KnownPeers(peers) => {
                     for peer in peers {
-                        if !known_peers.contains_key(&peer) {
-                            known_peers.insert(peer, PeerState::Known);
-                        }
+                        known_peers.entry(peer).or_insert(PeerState::Known);
                     }
                 }
                 SwimMessage::Ping => {
@@ -235,7 +235,7 @@ async fn main() {
                     send_msg(&sock, &peer, &SwimMessage::Ping).await;
                 }
                 _ => {
-                    println!("Received unexpected message: {msg:?}");
+                    log::info!("Received unexpected message: {msg:?}");
                 }
             }
         }
@@ -260,7 +260,6 @@ async fn main() {
             match peer_state {
                 PeerState::WaitingForPing(ping_sent) => {
                     if Instant::now().duration_since(*ping_sent) < PING_TIMEOUT {
-                        println!("Not long enough");
                         continue;
                     };
 
@@ -269,7 +268,7 @@ async fn main() {
                         .collect();
 
                     if indirect_ping_peers.is_empty() {
-                        println!("No indirect peers to ask");
+                        log::info!("No indirect peers to ask to ping {peer}; removing them now");
                         // There's no one we can ask for an indirect ping, so give up on this peer
                         // right away I guess.
                         removed_peers.push(*peer);
@@ -279,7 +278,6 @@ async fn main() {
                     // Ask these peers to ping the suspected peer on our behalf
                     indirectly_pinged_peers.push(*peer);
                     let msg = SwimMessage::PingRequest(*peer);
-                    println!("Asking indirect peers");
                     for indirect_ping_peer in indirect_ping_peers {
                         // todo: run in parallel
                         send_msg(&sock, indirect_ping_peer, &msg).await;
@@ -291,7 +289,9 @@ async fn main() {
                     };
 
                     // Give up on 'em
-                    println!("Suspected peer {peer} timed out and is presumed down; removing them");
+                    log::info!(
+                        "Suspected peer {peer} timed out and is presumed down; removing them"
+                    );
                     removed_peers.push(*peer);
                 }
                 _ => {}
@@ -301,29 +301,16 @@ async fn main() {
             known_peers.insert(peer, PeerState::WaitingForIndirectPing(Instant::now()));
         }
         for removed_peer in removed_peers {
-            println!("Removing peer {removed_peer}");
+            log::info!("Removing peer {removed_peer}");
             known_peers.remove(&removed_peer);
+            curious_peers.remove_entry(&removed_peer);
 
-            // Build a list of peers that we should tell that peer is down
-            let mut peers_to_inform: HashSet<Peer> = HashSet::new();
-
-            // First, include any of our known peers who are not themselves suspected of being down
-            for peer in non_suspected_peers.iter() {
-                peers_to_inform.insert(*peer);
-            }
-
-            // Next, add any peers that have asked us to ping the down peer on their behalf
-            if let Some((_, previously_curious_peers)) = curious_peers.remove_entry(&removed_peer) {
-                for peer in previously_curious_peers {
-                    peers_to_inform.insert(peer);
-                }
-            }
-
-            // Finally, actually inform them
-            for peer in peers_to_inform {
-                // todo: run in parallel
-                send_msg(&sock, &peer, &SwimMessage::Failed(removed_peer)).await;
-            }
+            send_msg(
+                &broadcast_sock,
+                &broadcast_addr,
+                &SwimMessage::Failed(removed_peer),
+            )
+            .await;
         }
 
         // Ping a random peer
@@ -334,7 +321,6 @@ async fn main() {
             .map(|(addr, _)| *addr)
             .collect();
         if let Some(target_peer) = non_suspected_peers.choose(&mut rng) {
-            println!("Pinging random peer {target_peer}");
             // - send a PING message to P and start a timeout
             //     - if P replies with an ACK, mark the peer as up
             known_peers.insert(*target_peer, PeerState::WaitingForPing(Instant::now()));
@@ -345,11 +331,10 @@ async fn main() {
 
         // Dump our list of peers out
         if !known_peers.is_empty() {
-            println!("+= Peers: ========");
+            log::info!("== Peers: ========");
             for (peer, peer_state) in known_peers.iter() {
-                println!("|| {peer}:\t{peer_state:?}");
+                log::info!("+ {peer}:\t{peer_state}");
             }
-            println!("+=================");
         }
 
         // Wait until the next tick
