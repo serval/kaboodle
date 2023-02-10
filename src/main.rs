@@ -1,5 +1,6 @@
 // todo
 // - proper error handling
+// - add a 'props' payload for peers to share info about themsleves
 
 use std::{
     collections::HashMap,
