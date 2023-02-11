@@ -1,6 +1,7 @@
 // todo
 // - proper error handling
 // - add a 'props' payload for peers to share info about themsleves
+// - re-send the join message every N seconds if I have no peerrs
 
 use std::{
     collections::HashMap,
