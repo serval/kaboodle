@@ -173,10 +173,6 @@ async fn main() {
                 // Nothing to receive
                 break;
             };
-            if sender == self_addr {
-                // Ignore our own broadcasts
-                continue;
-            };
             let Ok(msg) = bincode::deserialize::<SwimMessage>(&buf) else {
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
@@ -195,7 +191,10 @@ async fn main() {
                     known_peers.remove(&peer);
                 }
                 SwimMessage::Join(peer) => {
-                    log::info!("Got a join from {peer}");
+                    if peer == self_addr {
+                        continue;
+                    }
+                    log::info!("Got a join from {peer} {sender} {self_addr}");
                     known_peers.insert(peer, PeerState::Known);
 
                     // Send a list of known peers to the newcomer
