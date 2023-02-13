@@ -16,6 +16,7 @@ use networking::my_ipv4_addrs;
 
 use rand::{seq::SliceRandom, thread_rng};
 use serde_derive::{Deserialize, Serialize};
+use sha256::digest;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use tokio::net::UdpSocket;
 
@@ -30,6 +31,14 @@ enum SwimMessage {
     Ack(Peer),
     Failed(Peer),
     KnownPeers(Vec<Peer>),
+}
+
+/// Returns an SHA-256 hash of the current list of peers. The list is sorted before hashing, so it
+/// should be stable against ordering differences across different hosts.
+fn get_mesh_fingerprint(hosts: Vec<&Peer>) -> String {
+    let mut hosts: Vec<String> = hosts.iter().map(|peer| peer.to_string()).collect();
+    hosts.sort();
+    digest(hosts.join(","))
 }
 
 async fn send_msg(sock: &UdpSocket, target_peer: &SocketAddr, msg: &SwimMessage) {
@@ -339,10 +348,15 @@ async fn main() {
 
         // Dump our list of peers out
         if !known_peers.is_empty() {
-            log::info!("== Peers: ========");
+            let fingerprint = &get_mesh_fingerprint(known_peers.keys().collect())[0..8];
+            log::info!("== Peers: {} ({})", known_peers.len(), fingerprint);
             for (peer, peer_state) in known_peers.iter() {
                 log::info!("+ {peer}:\t{peer_state}");
             }
+            set_terminal_title(&format!("{self_addr} {fingerprint}"));
+        } else {
+            log::info!("== Peers: none");
+            set_terminal_title(&self_addr.to_string());
         }
 
         // Wait until the next tick

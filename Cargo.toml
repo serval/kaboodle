@@ -17,5 +17,6 @@ mdns-sd = {version = "0.5.10", features = ["async"]}
 rand = "0.8.5"
 serde = "1.0.152"
 serde_derive = "1.0.152"
+sha256 = "1.1.2"
 socket2 = "0.4.7"
 tokio = {version = "1.25.0", features = ["full"]}
