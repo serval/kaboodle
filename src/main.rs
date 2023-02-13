@@ -64,6 +64,9 @@ const NUM_INDIRECT_PING_PEERS: usize = 3;
 /// How long to wait for an ack to a ping or indirect ping before assuming it's never going to come.
 const PING_TIMEOUT: Duration = Duration::from_millis(2000);
 
+/// How often to re-broadcast our Join message if we don't know about any other peers right now
+const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
+
 #[derive(Debug, Eq, PartialEq)]
 enum PeerState {
     /// Peer is known to us and believed to be up.
@@ -137,16 +140,29 @@ async fn main() {
     log::info!("I am {self_addr}");
     known_peers.insert(self_addr, PeerState::Known);
 
-    // Broadcast our existence
-    send_msg(
-        &broadcast_sock,
-        &broadcast_addr,
-        &SwimMessage::Join(self_addr),
-    )
-    .await;
+    // Keeps track of when we last broadcast a Join message
+    let mut last_broadcast_time = None;
 
     loop {
         let tick_start = Instant::now();
+
+        let should_broadcast = if let Some(last_broadcast_time) = last_broadcast_time {
+            // Re-broadcast if we only know about ourself and it has been a while since we tried
+            known_peers.len() == 1
+                && tick_start.duration_since(last_broadcast_time) >= REBROADCAST_INTERVAL
+        } else {
+            true
+        };
+        if should_broadcast {
+            // Broadcast our existence
+            last_broadcast_time = Some(Instant::now());
+            send_msg(
+                &broadcast_sock,
+                &broadcast_addr,
+                &SwimMessage::Join(self_addr),
+            )
+            .await;
+        }
 
         // Handle any broadcast messages
         // Note that, at least on macOS, if you run multiple copies of this app simultaneously, only
