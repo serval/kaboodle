@@ -1,13 +1,13 @@
 // todo
 // - proper error handling
 // - add a 'props' payload for peers to share info about themsleves
-// - re-send the join message every N seconds if I have no peerrs
+// - Infection-Style Dissemination: Instead of propagating node failure information via multicast, protocol messages are piggybacked on the ping messages used to determine node liveness. This is equivalent to gossip dissemination.
+// - Round-Robin Probe Target Selection: Instead of randomly picking a node to probe during each protocol time step, the protocol is modified so that each node performs a round-robin selection of probe target. This bounds the worst-case detection time of the protocol, without degrading the average detection time.
 
 use std::{
     collections::HashMap,
     fmt::Display,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    thread::sleep,
     time::{Duration, Instant},
 };
 
@@ -17,7 +17,7 @@ use rand::{rngs::ThreadRng, seq::SliceRandom, thread_rng};
 use serde_derive::{Deserialize, Serialize};
 use sha256::digest;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use tokio::net::UdpSocket;
+use tokio::{net::UdpSocket, time::sleep};
 
 /// The minimum amount of time to wait between ticks; we keep track of how long it's been since the
 /// start of the current tick and wait however long is required to keep the time between ticks as
@@ -42,14 +42,6 @@ enum SwimMessage {
     Ack(Peer),
     Failed(Peer),
     KnownPeers(Vec<Peer>),
-}
-
-async fn send_msg(sock: &UdpSocket, target_peer: &SocketAddr, msg: &SwimMessage) {
-    log::info!("SEND [{target_peer}] {msg:?}");
-    let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
-    sock.send_to(&out_bytes, target_peer)
-        .await
-        .expect("Failed to send");
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -92,6 +84,9 @@ pub struct Gossip {
 }
 
 impl Gossip {
+    /// Creates a new Gossip mesh client, broadcasting on the given port number. All clients using
+    /// a given port number will discover and coordinate with each other; give your mesh a distinct
+    /// port number that is not already well-known for another purpose.
     pub async fn new(broadcast_port: u16) -> Gossip {
         // Set up our main communications socket
         let sock = {
@@ -153,14 +148,40 @@ impl Gossip {
         digest(hosts.join(","))
     }
 
+    /// Returns the address we use for one-to-one UDP messages.
     pub fn get_self_addr(&self) -> SocketAddr {
         self.self_addr
     }
 
+    /// Returns our current list of known peers.
     pub fn get_peers(&self) -> &HashMap<Peer, PeerState> {
         &self.known_peers
     }
 
+    /// Broadcasts the given message to the entire mesh.
+    async fn broadcast_msg(&self, msg: &SwimMessage) {
+        log::info!("BROADCAST {msg:?}");
+        let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
+        self.broadcast_sock
+            .send_to(&out_bytes, self.broadcast_addr)
+            .await
+            .expect("Failed to send");
+    }
+
+    /// Sends the given mesh to a single specific peer.
+    async fn send_msg(&self, target_peer: &SocketAddr, msg: &SwimMessage) {
+        log::info!("SEND [{target_peer}] {msg:?}");
+        let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
+        self.sock
+            .send_to(&out_bytes, target_peer)
+            .await
+            .expect("Failed to send");
+    }
+
+    /// Runs the next round of mesh maintainance. The logic here is based on the SWIM paper by
+    /// Gupta et al:
+    /// https://en.wikipedia.org/wiki/SWIM_Protocol
+    /// http://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf
     pub async fn tick(&mut self) {
         let tick_start = Instant::now();
 
@@ -173,13 +194,8 @@ impl Gossip {
         };
         if should_broadcast {
             // Broadcast our existence
-            self.last_broadcast_time = Some(Instant::now());
-            send_msg(
-                &self.broadcast_sock,
-                &self.broadcast_addr,
-                &SwimMessage::Join(self.self_addr),
-            )
-            .await;
+            self.last_broadcast_time = Some(tick_start);
+            self.broadcast_msg(&SwimMessage::Join(self.self_addr)).await;
         }
 
         // Handle any broadcast messages
@@ -195,7 +211,7 @@ impl Gossip {
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
-            log::info!("CAST [{sender}] {msg:?}");
+            log::info!("RECV-BROADCAST [{sender}] {msg:?}");
             match msg {
                 SwimMessage::Failed(peer) => {
                     if peer == self.self_addr {
@@ -228,7 +244,8 @@ impl Gossip {
                         .collect();
 
                     if !other_peers.is_empty() {
-                        send_msg(&self.sock, &peer, &SwimMessage::KnownPeers(other_peers)).await;
+                        self.send_msg(&peer, &SwimMessage::KnownPeers(other_peers))
+                            .await;
                     }
                 }
                 _ => {
@@ -261,7 +278,7 @@ impl Gossip {
                         // Some of our peers were waiting to hear back about this ping
                         for observer in observers {
                             // todo: run these in parallel
-                            send_msg(&self.sock, &observer, &SwimMessage::Ack(peer)).await;
+                            self.send_msg(&observer, &SwimMessage::Ack(peer)).await;
                         }
                     }
                 }
@@ -271,7 +288,8 @@ impl Gossip {
                     }
                 }
                 SwimMessage::Ping => {
-                    send_msg(&self.sock, &sender, &SwimMessage::Ack(self.self_addr)).await;
+                    self.send_msg(&sender, &SwimMessage::Ack(self.self_addr))
+                        .await;
                     self.known_peers.insert(sender, PeerState::Known);
                 }
                 SwimMessage::PingRequest(peer) => {
@@ -283,7 +301,7 @@ impl Gossip {
                     }
                     self.curious_peers.insert(peer, observers);
 
-                    send_msg(&self.sock, &peer, &SwimMessage::Ping).await;
+                    self.send_msg(&peer, &SwimMessage::Ping).await;
                 }
                 _ => {
                     log::info!("Received unexpected message: {msg:?}");
@@ -332,7 +350,7 @@ impl Gossip {
                     let msg = SwimMessage::PingRequest(*peer);
                     for indirect_ping_peer in indirect_ping_peers {
                         // todo: run in parallel
-                        send_msg(&self.sock, indirect_ping_peer, &msg).await;
+                        self.send_msg(indirect_ping_peer, &msg).await;
                     }
                 }
                 PeerState::WaitingForIndirectPing(ping_sent) => {
@@ -358,12 +376,7 @@ impl Gossip {
             self.known_peers.remove(&removed_peer);
             self.curious_peers.remove_entry(&removed_peer);
 
-            send_msg(
-                &self.broadcast_sock,
-                &self.broadcast_addr,
-                &SwimMessage::Failed(removed_peer),
-            )
-            .await;
+            self.broadcast_msg(&SwimMessage::Failed(removed_peer)).await;
         }
 
         // Ping a random peer
@@ -383,27 +396,14 @@ impl Gossip {
                 .insert(*target_peer, PeerState::WaitingForPing(Instant::now()));
 
             // Comment out the following line to test indirect pinging
-            send_msg(&self.sock, target_peer, &SwimMessage::Ping).await;
+            self.send_msg(target_peer, &SwimMessage::Ping).await;
         }
-
-        // // Dump our list of peers out
-        // if !known_peers.is_empty() {
-        //     let fingerprint = &get_mesh_fingerprint(known_peers.keys().collect())[0..8];
-        //     log::info!("== Peers: {} ({})", known_peers.len(), fingerprint);
-        //     for (peer, peer_state) in known_peers.iter() {
-        //         log::info!("+ {peer}:\t{peer_state}");
-        //     }
-        //     set_terminal_title(&format!("{self_addr} {fingerprint}"));
-        // } else {
-        //     log::info!("== Peers: none");
-        //     set_terminal_title(&self_addr.to_string());
-        // }
 
         // Wait until the next tick
         let time_since_tick_start = Instant::now().duration_since(tick_start);
         let required_delay = IDEAL_TICK_DURATION - time_since_tick_start;
         if required_delay.as_millis() > 0 {
-            sleep(required_delay);
+            sleep(required_delay).await;
         }
     }
 }
