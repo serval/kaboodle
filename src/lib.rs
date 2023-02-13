@@ -141,29 +141,26 @@ impl Gossip {
             .expect("Failed to send");
     }
 
-    /// Runs the next round of mesh maintainance. The logic here is based on the SWIM paper by
-    /// Gupta et al:
-    /// https://en.wikipedia.org/wiki/SWIM_Protocol
-    /// http://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf
-    pub async fn tick(&mut self) {
-        let tick_start = Instant::now();
-
+    async fn maybe_broadcast_join(&mut self) {
+        let now = Instant::now();
         let should_broadcast = if let Some(last_broadcast_time) = self.last_broadcast_time {
             // Re-broadcast if we only know about ourself and it has been a while since we tried
             self.known_peers.len() == 1
-                && tick_start.duration_since(last_broadcast_time) >= REBROADCAST_INTERVAL
+                && now.duration_since(last_broadcast_time) >= REBROADCAST_INTERVAL
         } else {
             true
         };
         if should_broadcast {
             // Broadcast our existence
-            self.last_broadcast_time = Some(tick_start);
+            self.last_broadcast_time = Some(now);
             self.broadcast_msg(&SwimMessage::Join(self.self_addr)).await;
         }
+    }
 
-        // Handle any broadcast messages
-        // Note that, at least on macOS, if you run multiple copies of this app simultaneously, only
-        // one instance will actually receive broadcast packets.
+    /// Handle any incoming broadcast messages
+    /// Note that, at least on macOS, if you run multiple copies of this app simultaneously, only
+    /// one instance will actually receive broadcast packets.
+    async fn handle_incoming_broadcasts(&mut self) {
         loop {
             let mut buf = [0; 1024];
             let Ok((_len, sender)) = self.broadcast_sock.try_recv_from(&mut buf) else {
@@ -216,7 +213,9 @@ impl Gossip {
                 }
             }
         }
+    }
 
+    async fn handle_incoming_messages(&mut self) {
         // Handle any incoming messages
         loop {
             let mut buf = [0u8; 1024];
@@ -271,7 +270,9 @@ impl Gossip {
                 }
             }
         }
+    }
 
+    async fn handle_suspected_peers(&mut self) {
         // Handle suspected peers
         // - for each suspected peer P,
         //   - if they have not responded to our ping request within PING_TIMEOUT_MS,
@@ -341,7 +342,9 @@ impl Gossip {
 
             self.broadcast_msg(&SwimMessage::Failed(removed_peer)).await;
         }
+    }
 
+    async fn ping_random_peer(&mut self) {
         // Ping a random peer
         // - pick a known peer P at random
         let non_suspected_peers: Vec<Peer> = self
@@ -361,8 +364,25 @@ impl Gossip {
             // Comment out the following line to test indirect pinging
             self.send_msg(target_peer, &SwimMessage::Ping).await;
         }
+    }
+
+    /// Runs the next round of mesh maintainance. The logic here is based on the SWIM paper by
+    /// Gupta et al:
+    /// https://en.wikipedia.org/wiki/SWIM_Protocol
+    /// http://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf
+    pub async fn tick(&mut self) {
+        let tick_start = Instant::now();
+
+        self.maybe_broadcast_join().await;
+        self.handle_incoming_broadcasts().await;
+        self.handle_incoming_messages().await;
+        self.handle_suspected_peers().await;
+        self.ping_random_peer().await;
 
         // Wait until the next tick
+        // TODO: at some point, refactor Gossip so it spins up its own fork and runs the tick loop
+        // by itself. When that happens, take this delay out of the tick function and into whatever
+        // runs the loop.
         let time_since_tick_start = Instant::now().duration_since(tick_start);
         let required_delay = IDEAL_TICK_DURATION - time_since_tick_start;
         if required_delay.as_millis() > 0 {
