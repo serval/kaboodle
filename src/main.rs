@@ -1,7 +1,6 @@
 use dotenvy::dotenv;
 use gossip::Gossip;
 
-pub mod gossip;
 pub mod networking;
 
 fn set_terminal_title(title: &str) {

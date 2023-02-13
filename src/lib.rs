@@ -4,20 +4,21 @@
 // - Infection-Style Dissemination: Instead of propagating node failure information via multicast, protocol messages are piggybacked on the ping messages used to determine node liveness. This is equivalent to gossip dissemination.
 // - Round-Robin Probe Target Selection: Instead of randomly picking a node to probe during each protocol time step, the protocol is modified so that each node performs a round-robin selection of probe target. This bounds the worst-case detection time of the protocol, without degrading the average detection time.
 
+use rand::{rngs::ThreadRng, seq::SliceRandom, thread_rng};
+use sha256::digest;
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::{
     collections::HashMap,
-    fmt::Display,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     time::{Duration, Instant},
 };
-
-use crate::networking::my_ipv4_addrs;
-
-use rand::{rngs::ThreadRng, seq::SliceRandom, thread_rng};
-use serde_derive::{Deserialize, Serialize};
-use sha256::digest;
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use structs::{Peer, PeerState, SwimMessage};
 use tokio::{net::UdpSocket, time::sleep};
+
+mod structs;
+
+pub mod networking;
+use crate::networking::my_ipv4_addrs;
 
 /// The minimum amount of time to wait between ticks; we keep track of how long it's been since the
 /// start of the current tick and wait however long is required to keep the time between ticks as
@@ -32,44 +33,6 @@ const PING_TIMEOUT: Duration = Duration::from_millis(2000);
 
 /// How often to re-broadcast our Join message if we don't know about any other peers right now
 const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
-
-type Peer = SocketAddr;
-#[derive(Serialize, Deserialize, Debug, Clone)]
-enum SwimMessage {
-    Join(Peer),
-    Ping,
-    PingRequest(Peer),
-    Ack(Peer),
-    Failed(Peer),
-    KnownPeers(Vec<Peer>),
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum PeerState {
-    /// Peer is known to us and believed to be up.
-    Known,
-
-    /// We have sent a ping and are waiting for the response. We keep track of when we sent the ping
-    /// and will send an indirect ping if more than PING_TIMEOUT elapse.
-    WaitingForPing(Instant),
-
-    /// We have sent indirect ping requests to one or more other peers to see if any of them are
-    /// able to communicate with this peer. We keep track of when we sent the ping request and will
-    /// drop this peer if more than PING_TIMEOUT elapses.
-    WaitingForIndirectPing(Instant),
-}
-
-impl Display for PeerState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let str = match self {
-            PeerState::Known => "Known",
-            PeerState::WaitingForPing(_) => "WaitingForPing",
-            PeerState::WaitingForIndirectPing(_) => "WaitingForIndirectPing",
-        };
-        write!(f, "{str}")?;
-        Ok(())
-    }
-}
 
 pub struct Gossip {
     rng: ThreadRng,
