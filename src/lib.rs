@@ -25,6 +25,10 @@ use crate::networking::my_ipv4_addrs;
 /// close as possible to this duration.
 const IDEAL_TICK_DURATION: Duration = Duration::from_millis(1000);
 
+/// How large of a buffer to use when reading from our sockets; messages larger than this will be
+/// truncated. TODO: Figure out what an actually optimal size would be.
+const INCOMING_BUFFER_SIZE: usize = 1024;
+
 /// How many other peers to ask to ping an unresponsive peer on our behalf.
 const NUM_INDIRECT_PING_PEERS: usize = 3;
 
@@ -161,12 +165,8 @@ impl Gossip {
     /// Note that, at least on macOS, if you run multiple copies of this app simultaneously, only
     /// one instance will actually receive broadcast packets.
     async fn handle_incoming_broadcasts(&mut self) {
-        loop {
-            let mut buf = [0; 1024];
-            let Ok((_len, sender)) = self.broadcast_sock.try_recv_from(&mut buf) else {
-                // Nothing to receive
-                break;
-            };
+        let mut buf = [0; INCOMING_BUFFER_SIZE];
+        while let Ok((_len, sender)) = self.broadcast_sock.try_recv_from(&mut buf) {
             let Ok(msg) = bincode::deserialize::<SwimMessage>(&buf) else {
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
@@ -216,13 +216,8 @@ impl Gossip {
     }
 
     async fn handle_incoming_messages(&mut self) {
-        // Handle any incoming messages
-        loop {
-            let mut buf = [0u8; 1024];
-            let Ok((_len, sender)) = self.sock.try_recv_from(&mut buf) else {
-                // No more messages for now
-                break;
-            };
+        let mut buf = [0; INCOMING_BUFFER_SIZE];
+        while let Ok((_len, sender)) = self.sock.try_recv_from(&mut buf) {
             let Ok(msg) = bincode::deserialize::<SwimMessage>(&buf) else {
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
@@ -373,6 +368,11 @@ impl Gossip {
     pub async fn tick(&mut self) {
         let tick_start = Instant::now();
 
+        // Building and maintaining the mesh consists of a number of subtasks that are repeated in
+        // each tick.
+        // In theory, we can run all of these things in parallel. This is left as an exercise for
+        // the future; for now, it's nice to be able to reason about the logic of the mesh as a
+        // series of individual steps happening over and over.
         self.maybe_broadcast_join().await;
         self.handle_incoming_broadcasts().await;
         self.handle_incoming_messages().await;
@@ -380,8 +380,8 @@ impl Gossip {
         self.ping_random_peer().await;
 
         // Wait until the next tick
-        // TODO: at some point, refactor Gossip so it spins up its own fork and runs the tick loop
-        // by itself. When that happens, take this delay out of the tick function and into whatever
+        // TODO: at some point, refactor Gossip so it spins up its own thread and runs the tick loop
+        // by itself. When that happens, move this delay out of the tick function and into whatever
         // runs the loop.
         let time_since_tick_start = Instant::now().duration_since(tick_start);
         let required_delay = IDEAL_TICK_DURATION - time_since_tick_start;
