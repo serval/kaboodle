@@ -126,6 +126,7 @@ async fn main() {
 
     set_terminal_title(&self_addr.to_string());
     log::info!("I am {self_addr}");
+    known_peers.insert(self_addr, PeerState::Known);
 
     // Broadcast our existence
     send_msg(
@@ -158,6 +159,12 @@ async fn main() {
             log::info!("CAST [{sender}] {msg:?}");
             match msg {
                 SwimMessage::Failed(peer) => {
+                    if peer == self_addr {
+                        // Someone else must've lost connectivity to us, but that doesn't mean we
+                        // should forget about ourselves.
+                        continue;
+                    };
+
                     // Note: unclear whether we should unilaterally trust this but ok
                     log::info!("Removing peer that we were told has failed {peer}");
                     known_peers.remove(&peer);
