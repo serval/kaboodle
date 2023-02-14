@@ -7,8 +7,10 @@ pub type Peer = SocketAddr;
 /// moment in time.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PeerState {
-    /// Peer is known to us and believed to be up.
-    Known,
+    /// Peer is known to us and believed to be up. We keep track of the last time we heard anything
+    /// about this peer (e.g. received from them) so we can focus our per-tick pings on the most
+    /// out-of-date peers.
+    Known(Instant),
 
     /// We have sent a ping and are waiting for the response. We keep track of when we sent the ping
     /// and will send an indirect ping if a duration more than PING_TIMEOUT elapses.
@@ -23,7 +25,7 @@ pub enum PeerState {
 impl Display for PeerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str = match self {
-            PeerState::Known => "Known",
+            PeerState::Known(_) => "Known",
             PeerState::WaitingForPing(_) => "WaitingForPing",
             PeerState::WaitingForIndirectPing(_) => "WaitingForIndirectPing",
         };

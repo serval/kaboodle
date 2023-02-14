@@ -97,7 +97,7 @@ impl Kaboodle {
         self.known_peers
             .lock()
             .await
-            .insert(self_addr, PeerState::Known);
+            .insert(self_addr, PeerState::Known(Instant::now()));
 
         // Set up our broadcast communications socket
         let broadcast_sock = {
@@ -265,7 +265,7 @@ impl KaboodleInner {
                     }
                     log::info!("Got a join from {peer}");
                     let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(peer, PeerState::Known);
+                    known_peers.insert(peer, PeerState::Known(Instant::now()));
 
                     // Send a list of known peers to the newcomer
                     // todo: we might need to only send a subset in order to keep packet size down;
@@ -303,7 +303,7 @@ impl KaboodleInner {
                     // timestamp; if they were already in there with a suspected since timestamp,
                     // this will reset them back to being non-suspected.
                     let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(peer, PeerState::Known);
+                    known_peers.insert(peer, PeerState::Known(Instant::now()));
                     drop(known_peers);
 
                     if let Some(observers) = self.curious_peers.remove(&peer) {
@@ -316,8 +316,9 @@ impl KaboodleInner {
                 }
                 SwimMessage::KnownPeers(peers) => {
                     let mut known_peers = self.known_peers.lock().await;
+                    let now = Instant::now();
                     for peer in peers {
-                        known_peers.entry(peer).or_insert(PeerState::Known);
+                        known_peers.entry(peer).or_insert(PeerState::Known(now));
                     }
                     drop(known_peers);
                 }
@@ -325,7 +326,7 @@ impl KaboodleInner {
                     self.send_msg(&sender, &SwimMessage::Ack(self.self_addr))
                         .await;
                     let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(sender, PeerState::Known);
+                    known_peers.insert(sender, PeerState::Known(Instant::now()));
                     drop(known_peers);
                 }
                 SwimMessage::PingRequest(peer) => {
@@ -358,12 +359,15 @@ impl KaboodleInner {
         let mut known_peers = self.known_peers.lock().await;
         let non_suspected_peers = known_peers
             .iter()
-            .filter(|(_, peer_state)| **peer_state == PeerState::Known)
+            .filter(|(peer, peer_state)| match peer_state {
+                PeerState::Known(_) => **peer != self.self_addr,
+                _ => false,
+            })
             .map(|(peer, _)| *peer)
             .collect::<Vec<Peer>>();
         for (peer, peer_state) in known_peers.iter() {
             match peer_state {
-                PeerState::Known => {
+                PeerState::Known(_) => {
                     // Nothing required
                 }
                 PeerState::WaitingForPing(ping_sent) => {
@@ -423,16 +427,24 @@ impl KaboodleInner {
         // Ping a random peer
         // - pick a known peer P
         let mut known_peers = self.known_peers.lock().await;
-        let non_suspected_peers: Vec<Peer> = known_peers
+        let mut non_suspected_peers = known_peers
             .iter()
-            .filter(|(addr, peer_state)| {
-                **peer_state == PeerState::Known && **addr != self.self_addr
+            .filter(|(peer, peer_state)| match peer_state {
+                PeerState::Known(_) => **peer != self.self_addr,
+                _ => false,
             })
-            .map(|(addr, _)| *addr)
-            .collect();
+            .map(|(peer, peer_state)| match peer_state {
+                PeerState::Known(last_pinged) => (*peer, *last_pinged),
+                _ => panic!("This code should never execute"),
+            })
+            .collect::<Vec<(Peer, Instant)>>();
 
-        let Some(target_peer) = non_suspected_peers.choose(&mut self.rng) else {
-            return
+        // Find the peer with the oldest "Known" timestamp; this is the one that our knowledge of
+        // is most out of date.
+        non_suspected_peers.sort_by_key(|(_, last_pinged)| *last_pinged);
+        let Some((target_peer, _)) = non_suspected_peers.first() else {
+            // No one to ping
+            return;
         };
 
         // - send a PING message to P and start a timeout
