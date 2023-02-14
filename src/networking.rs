@@ -1,3 +1,5 @@
+//! This utility module contains some network interface conveniences.
+
 use if_addrs::{IfAddr, Ifv4Addr};
 
 use std::net::Ipv4Addr;

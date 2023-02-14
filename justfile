@@ -36,7 +36,7 @@ help:
     cargo nextest run --all-targets
 
 # Lint and automatically fix what we can fix
-@lint:
+@fix:
     cargo clippy --fix --allow-dirty --allow-staged
     cargo fmt
 

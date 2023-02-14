@@ -1,3 +1,23 @@
+#![forbid(unsafe_code)]
+#![deny(future_incompatible, missing_docs)]
+#![warn(
+    missing_debug_implementations,
+    rust_2018_idioms,
+    trivial_casts,
+    unused_qualifications
+)]
+//! Kaboodle is a Rust crate containing an approximate implementation of the [SWIM membership gossip
+//! protocol](http://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf), give or take
+//! some details. It can be used to discover other peers on the LAN without any central
+//! coordination.
+//!
+//! Kaboodle needs to be instantiated with a broadcast port number:
+//! ```rust
+//! let kaboodle = Kaboodle::new(7475);
+//! kaboodle.start().await;
+//! let peers = kaboodle.peers().await;
+//! ```
+
 // todo
 // - proper error handling
 // - add a 'props' payload for peers to share info about themsleves
@@ -27,7 +47,7 @@ use tokio::{
 
 mod structs;
 
-pub mod networking;
+mod networking;
 use crate::networking::my_ipv4_addrs;
 
 /// The minimum amount of time to wait between ticks; we keep track of how long it's been since the
@@ -36,8 +56,9 @@ use crate::networking::my_ipv4_addrs;
 /// is left as a constant for the sake of simplicity until the need arises.
 const IDEAL_TICK_DURATION: Duration = Duration::from_millis(1000);
 
-/// How large of a buffer to use when reading from our sockets; messages larger than this will be
-/// truncated. TODO: Figure out what an actually optimal size would be.
+/// How large a buffer to use when reading from our sockets; messages larger than this will be
+/// truncated.
+// TODO: Figure out what an actually optimal size would be.
 const INCOMING_BUFFER_SIZE: usize = 1024;
 
 /// How many other peers to ask to ping an unresponsive peer on our behalf.
@@ -50,6 +71,8 @@ const PING_TIMEOUT: Duration = Duration::from_millis(2000);
 /// How often to re-broadcast our Join message if we don't know about any other peers right now
 const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
 
+/// Data managed by a Kaboodle mesh client.
+#[derive(Debug)]
 pub struct Kaboodle {
     known_peers: Arc<Mutex<HashMap<Peer, PeerState>>>,
     state: RunState,
@@ -59,7 +82,7 @@ pub struct Kaboodle {
 }
 
 impl Kaboodle {
-    /// Creates a new Kaboodle mesh client, broadcasting on the given port number. All clients using
+    /// Create a new Kaboodle mesh client, broadcasting on the given port number. All clients using
     /// a given port number will discover and coordinate with each other; give your mesh a distinct
     /// port number that is not already well-known for another purpose.
     pub fn new(broadcast_port: u16) -> Kaboodle {
@@ -79,6 +102,7 @@ impl Kaboodle {
         }
     }
 
+    /// Tell the client to connect to the network and find other clients.
     pub async fn start(&mut self) {
         if self.state == RunState::Running {
             return;
@@ -136,6 +160,7 @@ impl Kaboodle {
         });
     }
 
+    /// Disconnect this client from the mesh network.
     pub async fn stop(&mut self) {
         if self.state != RunState::Running {
             return;
@@ -154,28 +179,28 @@ impl Kaboodle {
             .expect("Failed to send cancellation request to daemon thread");
     }
 
-    /// Returns an SHA-256 hash of the current list of peers. The list is sorted before hashing, so it
+    /// Calculate an SHA-256 hash of the current list of peers. The list is sorted before hashing, so it
     /// should be stable against ordering differences across different hosts.
-    pub async fn get_fingerprint(&self) -> String {
+    pub async fn fingerprint(&self) -> String {
         let known_peers = self.known_peers.lock().await;
         let mut hosts: Vec<String> = known_peers.keys().map(|peer| peer.to_string()).collect();
         hosts.sort();
         digest(hosts.join(","))
     }
 
-    /// Returns the address we use for one-to-one UDP messages, if we are currently running.
-    pub fn get_self_addr(&self) -> Option<SocketAddr> {
+    /// Get the address we use for one-to-one UDP messages, if we are currently running.
+    pub fn self_addr(&self) -> Option<SocketAddr> {
         self.self_addr
     }
 
-    /// Returns our current list of known peers.
-    pub async fn get_peers(&self) -> Vec<Peer> {
+    /// Get our current list of known peers.
+    pub async fn peers(&self) -> Vec<Peer> {
         let known_peers = self.known_peers.lock().await;
         known_peers.keys().copied().collect()
     }
 
-    /// Returns our current list of known peers and their current state.
-    pub async fn get_peer_states(&self) -> HashMap<Peer, PeerState> {
+    /// Get our current list of known peers and their current state.
+    pub async fn peer_states(&self) -> HashMap<Peer, PeerState> {
         let known_peers = self.known_peers.lock().await;
         known_peers.clone()
     }
@@ -350,7 +375,7 @@ impl KaboodleInner {
         // Handle suspected peers
         // - for each suspected peer P,
         //   - if they have not responded to our ping request within PING_TIMEOUT_MS,
-        //     - send pick N other random peers and send each of them a PING-REQ(P) message
+        //     - pick N other random peers and send each of them a PING-REQ(P) message
         //     - each recipient sends their own PING to P and forwards any ACK to the requestor
         //     - if any peer ACKs, mark P as up
         //     - if no ACKs arrive within PING_TIMEOUT_MS,
