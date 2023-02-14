@@ -3,9 +3,7 @@ use std::{fmt::Display, net::SocketAddr, time::Instant};
 
 pub type Peer = SocketAddr;
 
-/// The SwimMessage enum represents any messages we will send to the mesh, whether those are direct
-/// peer-to-peer messages or messages that are broadcast to the entire mesh. We should probably
-/// bifurcate into distinct SwimMessage and SwimBroadcastMessage enums someday.
+/// The SwimMessage enum represents messages we will send directly to another peer.
 ///
 /// The majority of these have a Peer associated with them. This is for two reasons:
 /// 1. Although we know the sender of any given message, broadcast messages always show the
@@ -15,12 +13,17 @@ pub type Peer = SocketAddr;
 ///    another peer, and their Ack needs to tell us who the ping acknowledgement is actually for.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SwimMessage {
-    Join(Peer),
     Ping,
     PingRequest(Peer),
     Ack(Peer),
-    Failed(Peer),
     KnownPeers(Vec<Peer>),
+}
+
+/// The SwimBroadcast enum represents messages that we broadcast to the entire mesh.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum SwimBroadcast {
+    Join(Peer),
+    Failed(Peer),
 }
 
 /// PeerState represents our knowledge about the status of a given peer in the network at any given

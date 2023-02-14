@@ -12,7 +12,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     time::{Duration, Instant},
 };
-use structs::{Peer, PeerState, SwimMessage};
+use structs::{Peer, PeerState, SwimBroadcast, SwimMessage};
 use tokio::{net::UdpSocket, time::sleep};
 
 mod structs;
@@ -126,7 +126,7 @@ impl Gossip {
     }
 
     /// Broadcasts the given message to the entire mesh.
-    async fn broadcast_msg(&self, msg: &SwimMessage) {
+    async fn broadcast_msg(&self, msg: &SwimBroadcast) {
         log::info!("BROADCAST {msg:?}");
         let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
         self.broadcast_sock
@@ -157,7 +157,8 @@ impl Gossip {
         if should_broadcast {
             // Broadcast our existence
             self.last_broadcast_time = Some(now);
-            self.broadcast_msg(&SwimMessage::Join(self.self_addr)).await;
+            self.broadcast_msg(&SwimBroadcast::Join(self.self_addr))
+                .await;
         }
     }
 
@@ -167,13 +168,13 @@ impl Gossip {
     async fn handle_incoming_broadcasts(&mut self) {
         let mut buf = [0; INCOMING_BUFFER_SIZE];
         while let Ok((_len, sender)) = self.broadcast_sock.try_recv_from(&mut buf) {
-            let Ok(msg) = bincode::deserialize::<SwimMessage>(&buf) else {
+            let Ok(msg) = bincode::deserialize::<SwimBroadcast>(&buf) else {
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
             log::info!("RECV-BROADCAST [{sender}] {msg:?}");
             match msg {
-                SwimMessage::Failed(peer) => {
+                SwimBroadcast::Failed(peer) => {
                     if peer == self.self_addr {
                         // Someone else must've lost connectivity to us, but that doesn't mean we
                         // should forget about ourselves.
@@ -184,7 +185,7 @@ impl Gossip {
                     log::info!("Removing peer that we were told has failed {peer}");
                     self.known_peers.remove(&peer);
                 }
-                SwimMessage::Join(peer) => {
+                SwimBroadcast::Join(peer) => {
                     if peer == self.self_addr {
                         continue;
                     }
@@ -207,9 +208,6 @@ impl Gossip {
                         self.send_msg(&peer, &SwimMessage::KnownPeers(other_peers))
                             .await;
                     }
-                }
-                _ => {
-                    log::info!("Got unexpected broadcast {msg:?}");
                 }
             }
         }
@@ -259,9 +257,6 @@ impl Gossip {
                     self.curious_peers.insert(peer, observers);
 
                     self.send_msg(&peer, &SwimMessage::Ping).await;
-                }
-                _ => {
-                    log::info!("Received unexpected message: {msg:?}");
                 }
             }
         }
@@ -335,7 +330,8 @@ impl Gossip {
             self.known_peers.remove(&removed_peer);
             self.curious_peers.remove_entry(&removed_peer);
 
-            self.broadcast_msg(&SwimMessage::Failed(removed_peer)).await;
+            self.broadcast_msg(&SwimBroadcast::Failed(removed_peer))
+                .await;
         }
     }
 
