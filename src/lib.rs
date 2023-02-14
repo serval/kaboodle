@@ -76,7 +76,7 @@ const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
 pub struct Kaboodle {
     known_peers: Arc<Mutex<HashMap<Peer, PeerState>>>,
     state: RunState,
-    broadcast_addr: SocketAddr,
+    broadcast_port: u16,
     self_addr: Option<SocketAddr>,
     cancellation_tx: Option<Sender<()>>,
 }
@@ -86,9 +86,6 @@ impl Kaboodle {
     /// a given port number will discover and coordinate with each other; give your mesh a distinct
     /// port number that is not already well-known for another purpose.
     pub fn new(broadcast_port: u16) -> Kaboodle {
-        let broadcast_addr =
-            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), broadcast_port));
-
         // Maps from a peer's address to the known state of that peer. See PeerState for a
         // description of the individual states.
         let known_peers: HashMap<Peer, PeerState> = HashMap::new();
@@ -96,7 +93,7 @@ impl Kaboodle {
         Kaboodle {
             known_peers: Arc::new(Mutex::new(known_peers)),
             state: RunState::NotStarted,
-            broadcast_addr,
+            broadcast_port,
             self_addr: None,
             cancellation_tx: None,
         }
@@ -126,6 +123,16 @@ impl Kaboodle {
             .insert(self_addr, PeerState::Known(Instant::now()));
 
         // Set up our broadcast communications socket
+        // For listening to broadcasts, we need to bind our socket to 0.0.0.0:<port>, but for
+        // sending broadcasts, we need to send to 255.255.255.255:<port>.
+        let broadcast_inbound_addr = SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(0, 0, 0, 0),
+            self.broadcast_port,
+        ));
+        let broadcast_outbound_addr = SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(255, 255, 255, 255),
+            self.broadcast_port,
+        ));
         let broadcast_sock = {
             let broadcast_sock =
                 Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
@@ -134,7 +141,7 @@ impl Kaboodle {
             broadcast_sock.set_reuse_address(true).unwrap();
             broadcast_sock.set_reuse_port(true).unwrap();
             broadcast_sock
-                .bind(&SockAddr::from(self.broadcast_addr))
+                .bind(&SockAddr::from(broadcast_inbound_addr))
                 .expect("Failed to bind for broadcast");
             let broadcast_sock: std::net::UdpSocket = broadcast_sock.into();
             UdpSocket::from_std(broadcast_sock).unwrap()
@@ -147,7 +154,7 @@ impl Kaboodle {
             sock,
             self_addr,
             rng: ChaChaRng::from_entropy(),
-            broadcast_addr: self.broadcast_addr,
+            broadcast_outbound_addr,
             broadcast_sock,
             known_peers: self.known_peers.clone(),
             curious_peers: HashMap::new(),
@@ -209,7 +216,7 @@ impl Kaboodle {
 struct KaboodleInner {
     rng: ChaChaRng,
     sock: UdpSocket,
-    broadcast_addr: SocketAddr,
+    broadcast_outbound_addr: SocketAddr,
     broadcast_sock: UdpSocket,
     self_addr: SocketAddr,
     known_peers: Arc<Mutex<HashMap<Peer, PeerState>>>,
@@ -228,7 +235,7 @@ impl KaboodleInner {
         log::info!("BROADCAST {msg:?}");
         let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
         self.broadcast_sock
-            .send_to(&out_bytes, self.broadcast_addr)
+            .send_to(&out_bytes, self.broadcast_outbound_addr)
             .await
             .expect("Failed to send");
     }
