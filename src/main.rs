@@ -1,5 +1,5 @@
 use dotenvy::dotenv;
-use gossip::Gossip;
+use kaboodle::Kaboodle;
 
 pub mod networking;
 
@@ -15,18 +15,18 @@ async fn main() {
     }
     env_logger::init();
 
-    let mut gossip = Gossip::new(7475).await;
-    let self_addr = &gossip.get_self_addr();
+    let mut kaboodle = Kaboodle::new(7475).await;
+    let self_addr = &kaboodle.get_self_addr();
     set_terminal_title(&self_addr.to_string());
     log::info!("I am {self_addr}");
 
     loop {
-        gossip.tick().await;
+        kaboodle.tick().await;
 
         // Dump our list of peers out
-        let known_peers = gossip.get_peers();
+        let known_peers = kaboodle.get_peers();
         if !known_peers.is_empty() {
-            let fingerprint = &gossip.get_fingerprint()[0..8];
+            let fingerprint = &kaboodle.get_fingerprint()[0..8];
             log::info!("== Peers: {} ({})", known_peers.len(), fingerprint);
             for (peer, peer_state) in known_peers.iter() {
                 log::info!("+ {peer}:\t{peer_state}");

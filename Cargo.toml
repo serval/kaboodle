@@ -1,9 +1,19 @@
 [package]
+authors = ["Serval Contributors <team@serval.sh>"]
+categories = ["mesh", "gossip protocols", "network-programming", "peer-to-peer"]
+description = """
+A low-configuration peer discovery mechanism for building peer-to-peer and mesh applications, based
+on the SWIM gossip protocol.
+"""
 edition = "2021"
-name = "gossip"
+homepage = "https://serval.sh"
+keywords = ["peer-to-peer", "mesh", "networking", "swim", "gossip"]
+license = "BSD-2-Clause-Patent"
+name = "kaboodle"
+readme = "README.md"
+repository = "https://github.com/serval/kaboodle"
+rust-version = "1.67"
 version = "0.1.0"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 async-trait = "0.1.64"

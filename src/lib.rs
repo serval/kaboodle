@@ -38,7 +38,7 @@ const PING_TIMEOUT: Duration = Duration::from_millis(2000);
 /// How often to re-broadcast our Join message if we don't know about any other peers right now
 const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
 
-pub struct Gossip {
+pub struct Kaboodle {
     rng: ThreadRng,
     sock: UdpSocket,
     broadcast_addr: SocketAddr,
@@ -50,11 +50,11 @@ pub struct Gossip {
     last_broadcast_time: Option<Instant>,
 }
 
-impl Gossip {
-    /// Creates a new Gossip mesh client, broadcasting on the given port number. All clients using
+impl Kaboodle {
+    /// Creates a new Kaboodle mesh client, broadcasting on the given port number. All clients using
     /// a given port number will discover and coordinate with each other; give your mesh a distinct
     /// port number that is not already well-known for another purpose.
-    pub async fn new(broadcast_port: u16) -> Gossip {
+    pub async fn new(broadcast_port: u16) -> Kaboodle {
         // Set up our main communications socket
         let sock = {
             let ip = my_ipv4_addrs()[0];
@@ -91,7 +91,7 @@ impl Gossip {
         // a ping ack from said peer.
         let curious_peers: HashMap<Peer, Vec<Peer>> = HashMap::new();
 
-        Gossip {
+        Kaboodle {
             sock,
             self_addr,
             rng: thread_rng(),

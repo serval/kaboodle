@@ -193,26 +193,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gossip"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bincode",
- "crossbeam-channel",
- "dotenvy",
- "env_logger",
- "if-addrs 0.8.0",
- "log",
- "mdns-sd",
- "rand",
- "serde",
- "serde_derive",
- "sha256",
- "socket2",
- "tokio",
-]
-
-[[package]]
 name = "hermit-abi"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -279,6 +259,26 @@ dependencies = [
  "io-lifetimes",
  "rustix",
  "windows-sys 0.45.0",
+]
+
+[[package]]
+name = "kaboodle"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "crossbeam-channel",
+ "dotenvy",
+ "env_logger",
+ "if-addrs 0.8.0",
+ "log",
+ "mdns-sd",
+ "rand",
+ "serde",
+ "serde_derive",
+ "sha256",
+ "socket2",
+ "tokio",
 ]
 
 [[package]]
