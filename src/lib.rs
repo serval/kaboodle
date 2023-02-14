@@ -32,7 +32,8 @@ use crate::networking::my_ipv4_addrs;
 
 /// The minimum amount of time to wait between ticks; we keep track of how long it's been since the
 /// start of the current tick and wait however long is required to keep the time between ticks as
-/// close as possible to this duration.
+/// close as possible to this duration. This could become a tuneable parameter in the future, but
+/// is left as a constant for the sake of simplicity until the need arises.
 const IDEAL_TICK_DURATION: Duration = Duration::from_millis(1000);
 
 /// How large of a buffer to use when reading from our sockets; messages larger than this will be
@@ -43,6 +44,7 @@ const INCOMING_BUFFER_SIZE: usize = 1024;
 const NUM_INDIRECT_PING_PEERS: usize = 3;
 
 /// How long to wait for an ack to a ping or indirect ping before assuming it's never going to come.
+/// In the future, we could adjust this dynamically based on the averge ping times we're seeing.
 const PING_TIMEOUT: Duration = Duration::from_millis(2000);
 
 /// How often to re-broadcast our Join message if we don't know about any other peers right now
@@ -64,8 +66,8 @@ impl Kaboodle {
         let broadcast_addr =
             SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), broadcast_port));
 
-        // Maps from a peer's address to the known state of that peer. See PeerState for a description
-        // of the individual states.
+        // Maps from a peer's address to the known state of that peer. See PeerState for a
+        // description of the individual states.
         let known_peers: HashMap<Peer, PeerState> = HashMap::new();
 
         Kaboodle {
@@ -365,6 +367,11 @@ impl KaboodleInner {
             })
             .map(|(peer, _)| *peer)
             .collect::<Vec<Peer>>();
+
+        // Note: iterating over every known peer to find the ones in the WaitingFor... states is
+        // obviously inefficient. If that turns out to be a problem, we can create separate lists
+        // for those peers. Until it's known to be a problem, however, the simplicity of just having
+        // a single HashMap remains appealling.
         for (peer, peer_state) in known_peers.iter() {
             match peer_state {
                 PeerState::Known(_) => {
