@@ -9,7 +9,8 @@ Wikipedia has [a brief overview of the SWIM protocol](https://en.wikipedia.org/w
 Kaboodle needs to be instantiated with a broadcast port number:
 
 ```rust
-let kaboodle = Kaboodle::new(7475).await;
+let kaboodle = Kaboodle::new(7475);
+kaboodle.start().await;
 ```
 
 This port number needs to be the same for all of the peers that want to discover each other; disjoint applications using Kaboodle can run independently on the same network so long as they use distinct port numbers.
