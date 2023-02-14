@@ -386,9 +386,8 @@ impl KaboodleInner {
         let mut known_peers = self.known_peers.lock().await;
         let non_suspected_peers = known_peers
             .iter()
-            .filter(|(peer, peer_state)| match peer_state {
-                PeerState::Known(_) => **peer != self.self_addr,
-                _ => false,
+            .filter(|(peer, peer_state)| {
+                **peer != self.self_addr && matches!(peer_state, PeerState::Known(_))
             })
             .map(|(peer, _)| *peer)
             .collect::<Vec<Peer>>();
@@ -461,9 +460,8 @@ impl KaboodleInner {
         let mut known_peers = self.known_peers.lock().await;
         let mut non_suspected_peers = known_peers
             .iter()
-            .filter(|(peer, peer_state)| match peer_state {
-                PeerState::Known(_) => **peer != self.self_addr,
-                _ => false,
+            .filter(|(peer, peer_state)| {
+                **peer != self.self_addr && matches!(peer_state, PeerState::Known(_))
             })
             .map(|(peer, peer_state)| match peer_state {
                 PeerState::Known(last_pinged) => (*peer, *last_pinged),
