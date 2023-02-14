@@ -18,8 +18,8 @@ This port number needs to be the same for all of the peers that want to discover
 At any point, you can retrieve the mesh's fingerprint and a list of all known peers:
 
 ```rust
-let fingerprint = kaboodle.get_fingerprint().await;
-let peers = kaboodle.get_peers().await;
+let fingerprint = kaboodle.fingerprint().await;
+let peers = kaboodle.peers().await;
 println!("{fingerprint} {peers:?}");
 ```
 
@@ -36,3 +36,7 @@ At this point, Kaboodle only supports IPv4. This is for reasons of expedience an
 This project uses [just](https://github.com/casey/just) (`brew install just`) for development workflows and automation. Run `just` with no arguments to see a list of available commands.
 
 `cargo run` will run a demo application that looks for peers via port 7475. If you have [zellij](https://zellij.dev) (`brew install zellij`) installed, you can run `just run2x2` to run four copies of the demo app in a 2x2 grid. Try quitting some of the instances and see how the remaining instances discover their absence; each pane has a title above it showing that instance's IP address and port number, as well as the mesh fingerprint from the perspective of that node.
+
+## LICENSE
+
+[BSD-2-Clause-Patent](./LICENSE)

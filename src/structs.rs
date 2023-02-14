@@ -34,7 +34,7 @@ impl Display for PeerState {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum RunState {
     NotStarted,
     Running,

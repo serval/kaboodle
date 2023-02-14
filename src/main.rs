@@ -22,7 +22,7 @@ async fn main() {
     // Begin discovering peers
     kaboodle.start().await;
 
-    let Some(self_addr) = &kaboodle.get_self_addr() else {
+    let Some(self_addr) = &kaboodle.self_addr() else {
         panic!("Expected us to have a self address by now");
     };
     set_terminal_title(&self_addr.to_string());
@@ -30,14 +30,14 @@ async fn main() {
 
     loop {
         // Dump our list of peers out
-        let known_peers = kaboodle.get_peer_states().await;
+        let known_peers = kaboodle.peer_states().await;
         if known_peers.len() < 2 {
             //  Note: we're always in the list of peers, hence the length check rather than an .is_empty()
             log::info!("== Peers: none");
             set_terminal_title(&self_addr.to_string());
         } else {
             let num_peers = known_peers.len();
-            let fingerprint = kaboodle.get_fingerprint().await;
+            let fingerprint = kaboodle.fingerprint().await;
             let fingerprint = &fingerprint[0..8];
             log::info!("== Peers: {} ({})", num_peers, fingerprint);
             for (peer, peer_state) in known_peers.iter() {
