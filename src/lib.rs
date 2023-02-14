@@ -363,6 +363,9 @@ impl KaboodleInner {
             .collect::<Vec<Peer>>();
         for (peer, peer_state) in known_peers.iter() {
             match peer_state {
+                PeerState::Known => {
+                    // Nothing required
+                }
                 PeerState::WaitingForPing(ping_sent) => {
                     if Instant::now().duration_since(*ping_sent) < PING_TIMEOUT {
                         continue;
@@ -399,12 +402,13 @@ impl KaboodleInner {
                     );
                     removed_peers.push(*peer);
                 }
-                _ => {}
             }
         }
+
         for peer in indirectly_pinged_peers {
             known_peers.insert(peer, PeerState::WaitingForIndirectPing(Instant::now()));
         }
+
         for removed_peer in removed_peers {
             log::info!("Removing peer {removed_peer}");
             known_peers.remove(&removed_peer);
@@ -417,7 +421,7 @@ impl KaboodleInner {
 
     async fn ping_random_peer(&mut self) {
         // Ping a random peer
-        // - pick a known peer P at random
+        // - pick a known peer P
         let mut known_peers = self.known_peers.lock().await;
         let non_suspected_peers: Vec<Peer> = known_peers
             .iter()
@@ -426,15 +430,18 @@ impl KaboodleInner {
             })
             .map(|(addr, _)| *addr)
             .collect();
-        if let Some(target_peer) = non_suspected_peers.choose(&mut self.rng) {
-            // - send a PING message to P and start a timeout
-            //     - if P replies with an ACK, mark the peer as up
-            known_peers.insert(*target_peer, PeerState::WaitingForPing(Instant::now()));
-            drop(known_peers);
 
-            // Comment out the following line to test indirect pinging
-            self.send_msg(target_peer, &SwimMessage::Ping).await;
-        }
+        let Some(target_peer) = non_suspected_peers.choose(&mut self.rng) else {
+            return
+        };
+
+        // - send a PING message to P and start a timeout
+        //     - if P replies with an ACK, mark the peer as up
+        known_peers.insert(*target_peer, PeerState::WaitingForPing(Instant::now()));
+        drop(known_peers);
+
+        // Comment out the following line to test indirect pinging
+        self.send_msg(target_peer, &SwimMessage::Ping).await;
     }
 
     /// Runs the next round of mesh maintainance. The logic here is based on the SWIM paper by
