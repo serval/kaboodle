@@ -121,7 +121,12 @@ impl Kaboodle {
     }
 
     /// Returns our current list of known peers.
-    pub fn get_peers(&self) -> &HashMap<Peer, PeerState> {
+    pub fn get_peers(&self) -> Vec<Peer> {
+        self.known_peers.keys().copied().collect()
+    }
+
+    /// Returns our current list of known peers and their current state.
+    pub fn get_peer_states(&self) -> &HashMap<Peer, PeerState> {
         &self.known_peers
     }
 

@@ -24,7 +24,7 @@ async fn main() {
         kaboodle.tick().await;
 
         // Dump our list of peers out
-        let known_peers = kaboodle.get_peers();
+        let known_peers = kaboodle.get_peer_states();
         if !known_peers.is_empty() {
             let fingerprint = &kaboodle.get_fingerprint()[0..8];
             log::info!("== Peers: {} ({})", known_peers.len(), fingerprint);
