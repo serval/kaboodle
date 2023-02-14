@@ -36,13 +36,14 @@ async fn main() {
             log::info!("== Peers: none");
             set_terminal_title(&self_addr.to_string());
         } else {
+            let num_peers = known_peers.len();
             let fingerprint = kaboodle.get_fingerprint().await;
             let fingerprint = &fingerprint[0..8];
-            log::info!("== Peers: {} ({})", known_peers.len(), fingerprint);
+            log::info!("== Peers: {} ({})", num_peers, fingerprint);
             for (peer, peer_state) in known_peers.iter() {
                 log::info!("+ {peer}:\t{peer_state}");
             }
-            set_terminal_title(&format!("{self_addr} {fingerprint}"));
+            set_terminal_title(&format!("{self_addr} {num_peers} {fingerprint}"));
         }
 
         sleep(Duration::from_millis(1000));
