@@ -274,6 +274,7 @@ dependencies = [
  "log",
  "mdns-sd",
  "rand",
+ "rand_chacha",
  "serde",
  "serde_derive",
  "sha256",

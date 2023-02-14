@@ -1,3 +1,5 @@
+use std::{thread::sleep, time::Duration};
+
 use dotenvy::dotenv;
 use kaboodle::Kaboodle;
 
@@ -15,26 +17,34 @@ async fn main() {
     }
     env_logger::init();
 
-    let mut kaboodle = Kaboodle::new(7475).await;
-    let self_addr = &kaboodle.get_self_addr();
+    let mut kaboodle = Kaboodle::new(7475);
+
+    // Begin discovering peers
+    kaboodle.start().await;
+
+    let Some(self_addr) = &kaboodle.get_self_addr() else {
+        panic!("Expected us to have a self address by now");
+    };
     set_terminal_title(&self_addr.to_string());
     log::info!("I am {self_addr}");
 
     loop {
-        kaboodle.tick().await;
-
         // Dump our list of peers out
-        let known_peers = kaboodle.get_peer_states();
-        if !known_peers.is_empty() {
-            let fingerprint = &kaboodle.get_fingerprint()[0..8];
+        let known_peers = kaboodle.get_peer_states().await;
+        if known_peers.len() < 2 {
+            //  Note: we're always in the list of peers, hence the length check rather than an .is_empty()
+            log::info!("== Peers: none");
+            set_terminal_title(&self_addr.to_string());
+        } else {
+            let fingerprint = kaboodle.get_fingerprint().await;
+            let fingerprint = &fingerprint[0..8];
             log::info!("== Peers: {} ({})", known_peers.len(), fingerprint);
             for (peer, peer_state) in known_peers.iter() {
                 log::info!("+ {peer}:\t{peer_state}");
             }
             set_terminal_title(&format!("{self_addr} {fingerprint}"));
-        } else {
-            log::info!("== Peers: none");
-            set_terminal_title(&self_addr.to_string());
         }
+
+        sleep(Duration::from_millis(1000));
     }
 }

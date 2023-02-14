@@ -5,7 +5,7 @@ pub type Peer = SocketAddr;
 
 /// PeerState represents our knowledge about the status of a given peer in the network at any given
 /// moment in time.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PeerState {
     /// Peer is known to us and believed to be up.
     Known,
@@ -30,6 +30,13 @@ impl Display for PeerState {
         write!(f, "{str}")?;
         Ok(())
     }
+}
+
+#[derive(PartialEq)]
+pub enum RunState {
+    NotStarted,
+    Running,
+    Stopped,
 }
 
 /// The SwimBroadcast enum represents messages that we broadcast to the entire mesh.

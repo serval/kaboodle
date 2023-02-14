@@ -4,16 +4,26 @@
 // - Infection-Style Dissemination: Instead of propagating node failure information via multicast, protocol messages are piggybacked on the ping messages used to determine node liveness. This is equivalent to gossip dissemination.
 // - Round-Robin Probe Target Selection: Instead of randomly picking a node to probe during each protocol time step, the protocol is modified so that each node performs a round-robin selection of probe target. This bounds the worst-case detection time of the protocol, without degrading the average detection time.
 
-use rand::{rngs::ThreadRng, seq::SliceRandom, thread_rng};
+use rand::seq::SliceRandom;
+use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaChaRng;
 use sha256::digest;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    sync::Arc,
     time::{Duration, Instant},
 };
-use structs::{Peer, PeerState, SwimBroadcast, SwimMessage};
-use tokio::{net::UdpSocket, time::sleep};
+use structs::{Peer, PeerState, RunState, SwimBroadcast, SwimMessage};
+use tokio::{
+    net::UdpSocket,
+    sync::{
+        mpsc::{Receiver, Sender},
+        Mutex,
+    },
+    time::sleep,
+};
 
 mod structs;
 
@@ -39,22 +49,40 @@ const PING_TIMEOUT: Duration = Duration::from_millis(2000);
 const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
 
 pub struct Kaboodle {
-    rng: ThreadRng,
-    sock: UdpSocket,
+    known_peers: Arc<Mutex<HashMap<Peer, PeerState>>>,
+    state: RunState,
     broadcast_addr: SocketAddr,
-    broadcast_sock: UdpSocket,
-    self_addr: SocketAddr,
-    known_peers: HashMap<Peer, PeerState>,
-    curious_peers: HashMap<Peer, Vec<Peer>>,
-    /// Keeps track of when we last broadcast a Join message
-    last_broadcast_time: Option<Instant>,
+    self_addr: Option<SocketAddr>,
+    cancellation_tx: Option<Sender<()>>,
 }
 
 impl Kaboodle {
     /// Creates a new Kaboodle mesh client, broadcasting on the given port number. All clients using
     /// a given port number will discover and coordinate with each other; give your mesh a distinct
     /// port number that is not already well-known for another purpose.
-    pub async fn new(broadcast_port: u16) -> Kaboodle {
+    pub fn new(broadcast_port: u16) -> Kaboodle {
+        let broadcast_addr =
+            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), broadcast_port));
+
+        // Maps from a peer's address to the known state of that peer. See PeerState for a description
+        // of the individual states.
+        let known_peers: HashMap<Peer, PeerState> = HashMap::new();
+
+        Kaboodle {
+            known_peers: Arc::new(Mutex::new(known_peers)),
+            state: RunState::NotStarted,
+            broadcast_addr,
+            self_addr: None,
+            cancellation_tx: None,
+        }
+    }
+
+    pub async fn start(&mut self) {
+        if self.state == RunState::Running {
+            return;
+        }
+        self.state = RunState::Running;
+
         // Set up our main communications socket
         let sock = {
             let ip = my_ipv4_addrs()[0];
@@ -62,12 +90,16 @@ impl Kaboodle {
                 .await
                 .expect("Failed to bind")
         };
+
+        // Put our socket address into the known peers list
         let self_addr = sock.local_addr().unwrap();
+        self.self_addr = Some(self_addr);
+        self.known_peers
+            .lock()
+            .await
+            .insert(self_addr, PeerState::Known);
 
         // Set up our broadcast communications socket
-
-        let broadcast_addr =
-            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), broadcast_port));
         let broadcast_sock = {
             let broadcast_sock =
                 Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
@@ -76,60 +108,94 @@ impl Kaboodle {
             broadcast_sock.set_reuse_address(true).unwrap();
             broadcast_sock.set_reuse_port(true).unwrap();
             broadcast_sock
-                .bind(&SockAddr::from(broadcast_addr))
+                .bind(&SockAddr::from(self.broadcast_addr))
                 .expect("Failed to bind for broadcast");
             let broadcast_sock: std::net::UdpSocket = broadcast_sock.into();
             UdpSocket::from_std(broadcast_sock).unwrap()
         };
 
-        // Maps from a peer's address to the known state of that peer. See PeerState for a description
-        // of the individual states.
-        let mut known_peers: HashMap<Peer, PeerState> = HashMap::new();
-        known_peers.insert(self_addr, PeerState::Known);
+        let (cancellation_tx, cancellation_rx) = tokio::sync::mpsc::channel(1);
+        self.cancellation_tx = Some(cancellation_tx);
 
-        // Maps from a peer's address to a list of other peers who would like to be informed if we get
-        // a ping ack from said peer.
-        let curious_peers: HashMap<Peer, Vec<Peer>> = HashMap::new();
-
-        Kaboodle {
+        let mut inner = KaboodleInner {
             sock,
             self_addr,
-            rng: thread_rng(),
-            broadcast_addr,
+            rng: ChaChaRng::from_entropy(),
+            broadcast_addr: self.broadcast_addr,
             broadcast_sock,
-            known_peers,
-            curious_peers,
+            known_peers: self.known_peers.clone(),
+            curious_peers: HashMap::new(),
             last_broadcast_time: None,
+            cancellation_rx,
+        };
+
+        tokio::spawn(async move {
+            inner.run().await;
+        });
+    }
+
+    pub async fn stop(&mut self) {
+        if self.state != RunState::Running {
+            return;
         }
+        self.state = RunState::Stopped;
+
+        let Some(cancellation_tx) = self.cancellation_tx.take() else {
+            // This should not happen
+            log::warn!("Unable to cancel daemon thread because we have no communication channel; this is a programming error.");
+            return;
+        };
+
+        cancellation_tx
+            .send(())
+            .await
+            .expect("Failed to send cancellation request to daemon thread");
     }
 
     /// Returns an SHA-256 hash of the current list of peers. The list is sorted before hashing, so it
     /// should be stable against ordering differences across different hosts.
-    pub fn get_fingerprint(&self) -> String {
-        let mut hosts: Vec<String> = self
-            .known_peers
-            .keys()
-            .map(|peer| peer.to_string())
-            .collect();
+    pub async fn get_fingerprint(&self) -> String {
+        let known_peers = self.known_peers.lock().await;
+        let mut hosts: Vec<String> = known_peers.keys().map(|peer| peer.to_string()).collect();
         hosts.sort();
         digest(hosts.join(","))
     }
 
-    /// Returns the address we use for one-to-one UDP messages.
-    pub fn get_self_addr(&self) -> SocketAddr {
+    /// Returns the address we use for one-to-one UDP messages, if we are currently running.
+    pub fn get_self_addr(&self) -> Option<SocketAddr> {
         self.self_addr
     }
 
     /// Returns our current list of known peers.
-    pub fn get_peers(&self) -> Vec<Peer> {
-        self.known_peers.keys().copied().collect()
+    pub async fn get_peers(&self) -> Vec<Peer> {
+        let known_peers = self.known_peers.lock().await;
+        known_peers.keys().copied().collect()
     }
 
     /// Returns our current list of known peers and their current state.
-    pub fn get_peer_states(&self) -> &HashMap<Peer, PeerState> {
-        &self.known_peers
+    pub async fn get_peer_states(&self) -> HashMap<Peer, PeerState> {
+        let known_peers = self.known_peers.lock().await;
+        known_peers.clone()
     }
+}
 
+struct KaboodleInner {
+    rng: ChaChaRng,
+    sock: UdpSocket,
+    broadcast_addr: SocketAddr,
+    broadcast_sock: UdpSocket,
+    self_addr: SocketAddr,
+    known_peers: Arc<Mutex<HashMap<Peer, PeerState>>>,
+    // Maps from a peer's address to a list of other peers who would like to be informed if we get
+    // a ping ack from said peer.
+    curious_peers: HashMap<Peer, Vec<Peer>>,
+    /// Keeps track of when we last broadcast a Join message
+    last_broadcast_time: Option<Instant>,
+    // Whether we should stop running; takes effect in the next tick
+    cancellation_rx: Receiver<()>,
+}
+
+impl KaboodleInner {
     /// Broadcasts the given message to the entire mesh.
     async fn broadcast_msg(&self, msg: &SwimBroadcast) {
         log::info!("BROADCAST {msg:?}");
@@ -154,7 +220,8 @@ impl Kaboodle {
         let now = Instant::now();
         let should_broadcast = if let Some(last_broadcast_time) = self.last_broadcast_time {
             // Re-broadcast if we only know about ourself and it has been a while since we tried
-            self.known_peers.len() == 1
+            let known_peers = self.known_peers.lock().await;
+            known_peers.len() == 1
                 && now.duration_since(last_broadcast_time) >= REBROADCAST_INTERVAL
         } else {
             true
@@ -188,26 +255,29 @@ impl Kaboodle {
 
                     // Note: unclear whether we should unilaterally trust this but ok
                     log::info!("Removing peer that we were told has failed {peer}");
-                    self.known_peers.remove(&peer);
+                    let mut known_peers = self.known_peers.lock().await;
+                    known_peers.remove(&peer);
+                    drop(known_peers);
                 }
                 SwimBroadcast::Join(peer) => {
                     if peer == self.self_addr {
                         continue;
                     }
                     log::info!("Got a join from {peer}");
-                    self.known_peers.insert(peer, PeerState::Known);
+                    let mut known_peers = self.known_peers.lock().await;
+                    known_peers.insert(peer, PeerState::Known);
 
                     // Send a list of known peers to the newcomer
                     // todo: we might need to only send a subset in order to keep packet size down;
                     // that is a problem for another day.
-                    let other_peers: Vec<Peer> = self
-                        .known_peers
+                    let other_peers: Vec<Peer> = known_peers
                         .iter()
                         // todo: maybe exclude peers in the  WaitingForIndirectPing state, since
                         // they are suspect.
                         .filter(|(other_peer, _)| **other_peer != peer)
                         .map(|(other_peer, _)| *other_peer)
                         .collect();
+                    drop(known_peers);
 
                     if !other_peers.is_empty() {
                         self.send_msg(&peer, &SwimMessage::KnownPeers(other_peers))
@@ -232,7 +302,9 @@ impl Kaboodle {
                     // Insert the peer into our known_peers map with None as their "suspected since"
                     // timestamp; if they were already in there with a suspected since timestamp,
                     // this will reset them back to being non-suspected.
-                    self.known_peers.insert(peer, PeerState::Known);
+                    let mut known_peers = self.known_peers.lock().await;
+                    known_peers.insert(peer, PeerState::Known);
+                    drop(known_peers);
 
                     if let Some(observers) = self.curious_peers.remove(&peer) {
                         // Some of our peers were waiting to hear back about this ping
@@ -243,14 +315,18 @@ impl Kaboodle {
                     }
                 }
                 SwimMessage::KnownPeers(peers) => {
+                    let mut known_peers = self.known_peers.lock().await;
                     for peer in peers {
-                        self.known_peers.entry(peer).or_insert(PeerState::Known);
+                        known_peers.entry(peer).or_insert(PeerState::Known);
                     }
+                    drop(known_peers);
                 }
                 SwimMessage::Ping => {
                     self.send_msg(&sender, &SwimMessage::Ack(self.self_addr))
                         .await;
-                    self.known_peers.insert(sender, PeerState::Known);
+                    let mut known_peers = self.known_peers.lock().await;
+                    known_peers.insert(sender, PeerState::Known);
+                    drop(known_peers);
                 }
                 SwimMessage::PingRequest(peer) => {
                     // Make a note of the fact that `sender` wants to hear whenever we get an ack
@@ -279,13 +355,13 @@ impl Kaboodle {
         //       - broadcast a FAILED(P) message to the mesh
         let mut removed_peers: Vec<Peer> = vec![];
         let mut indirectly_pinged_peers: Vec<Peer> = vec![];
-        let non_suspected_peers = self
-            .known_peers
+        let mut known_peers = self.known_peers.lock().await;
+        let non_suspected_peers = known_peers
             .iter()
             .filter(|(_, peer_state)| **peer_state == PeerState::Known)
             .map(|(peer, _)| *peer)
             .collect::<Vec<Peer>>();
-        for (peer, peer_state) in self.known_peers.iter() {
+        for (peer, peer_state) in known_peers.iter() {
             match peer_state {
                 PeerState::WaitingForPing(ping_sent) => {
                     if Instant::now().duration_since(*ping_sent) < PING_TIMEOUT {
@@ -327,12 +403,11 @@ impl Kaboodle {
             }
         }
         for peer in indirectly_pinged_peers {
-            self.known_peers
-                .insert(peer, PeerState::WaitingForIndirectPing(Instant::now()));
+            known_peers.insert(peer, PeerState::WaitingForIndirectPing(Instant::now()));
         }
         for removed_peer in removed_peers {
             log::info!("Removing peer {removed_peer}");
-            self.known_peers.remove(&removed_peer);
+            known_peers.remove(&removed_peer);
             self.curious_peers.remove_entry(&removed_peer);
 
             self.broadcast_msg(&SwimBroadcast::Failed(removed_peer))
@@ -343,8 +418,8 @@ impl Kaboodle {
     async fn ping_random_peer(&mut self) {
         // Ping a random peer
         // - pick a known peer P at random
-        let non_suspected_peers: Vec<Peer> = self
-            .known_peers
+        let mut known_peers = self.known_peers.lock().await;
+        let non_suspected_peers: Vec<Peer> = known_peers
             .iter()
             .filter(|(addr, peer_state)| {
                 **peer_state == PeerState::Known && **addr != self.self_addr
@@ -354,8 +429,8 @@ impl Kaboodle {
         if let Some(target_peer) = non_suspected_peers.choose(&mut self.rng) {
             // - send a PING message to P and start a timeout
             //     - if P replies with an ACK, mark the peer as up
-            self.known_peers
-                .insert(*target_peer, PeerState::WaitingForPing(Instant::now()));
+            known_peers.insert(*target_peer, PeerState::WaitingForPing(Instant::now()));
+            drop(known_peers);
 
             // Comment out the following line to test indirect pinging
             self.send_msg(target_peer, &SwimMessage::Ping).await;
@@ -366,9 +441,7 @@ impl Kaboodle {
     /// Gupta et al:
     /// https://en.wikipedia.org/wiki/SWIM_Protocol
     /// http://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf
-    pub async fn tick(&mut self) {
-        let tick_start = Instant::now();
-
+    async fn tick(&mut self) {
         // Building and maintaining the mesh consists of a number of subtasks that are repeated in
         // each tick.
         // In theory, we can run all of these things in parallel. This is left as an exercise for
@@ -379,15 +452,21 @@ impl Kaboodle {
         self.handle_incoming_messages().await;
         self.handle_suspected_peers().await;
         self.ping_random_peer().await;
+    }
 
-        // Wait until the next tick
-        // TODO: at some point, refactor Gossip so it spins up its own thread and runs the tick loop
-        // by itself. When that happens, move this delay out of the tick function and into whatever
-        // runs the loop.
-        let time_since_tick_start = Instant::now().duration_since(tick_start);
-        let required_delay = IDEAL_TICK_DURATION - time_since_tick_start;
-        if required_delay.as_millis() > 0 {
-            sleep(required_delay).await;
+    async fn run(&mut self) {
+        // Run until we receive an event on our cancellation channel
+        while self.cancellation_rx.try_recv().is_err() {
+            let tick_start = Instant::now();
+
+            self.tick().await;
+
+            // Wait until the next tick
+            let time_since_tick_start = Instant::now().duration_since(tick_start);
+            let required_delay = IDEAL_TICK_DURATION - time_since_tick_start;
+            if required_delay.as_millis() > 0 {
+                sleep(required_delay).await;
+            }
         }
     }
 }

@@ -25,6 +25,7 @@ if-addrs = "0.8.0"
 log = "0.4.17"
 mdns-sd = {version = "0.5.10", features = ["async"]}
 rand = "0.8.5"
+rand_chacha = "0.3.1"
 serde = "1.0.152"
 serde_derive = "1.0.152"
 sha256 = "1.1.2"
