@@ -3,29 +3,6 @@ use std::{fmt::Display, net::SocketAddr, time::Instant};
 
 pub type Peer = SocketAddr;
 
-/// The SwimMessage enum represents messages we will send directly to another peer.
-///
-/// The majority of these have a Peer associated with them. This is for two reasons:
-/// 1. Although we know the sender of any given message, broadcast messages always show the
-///    broadcast address (IP address 0.0.0.0, with whatever the broadcast port number is), which
-///    means that we can't directly tell who sent a broadcast message.
-/// 2. Some of our operations (e.g. Ping) can be done indirectly -- we can ask a peer to ping
-///    another peer, and their Ack needs to tell us who the ping acknowledgement is actually for.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum SwimMessage {
-    Ping,
-    PingRequest(Peer),
-    Ack(Peer),
-    KnownPeers(Vec<Peer>),
-}
-
-/// The SwimBroadcast enum represents messages that we broadcast to the entire mesh.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum SwimBroadcast {
-    Join(Peer),
-    Failed(Peer),
-}
-
 /// PeerState represents our knowledge about the status of a given peer in the network at any given
 /// moment in time.
 #[derive(Debug, Eq, PartialEq)]
@@ -53,4 +30,27 @@ impl Display for PeerState {
         write!(f, "{str}")?;
         Ok(())
     }
+}
+
+/// The SwimBroadcast enum represents messages that we broadcast to the entire mesh.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum SwimBroadcast {
+    Join(Peer),
+    Failed(Peer),
+}
+
+/// The SwimMessage enum represents messages we will send directly to another peer.
+///
+/// The majority of these have a Peer associated with them. This is for two reasons:
+/// 1. Although we know the sender of any given message, broadcast messages always show the
+///    broadcast address (IP address 0.0.0.0, with whatever the broadcast port number is), which
+///    means that we can't directly tell who sent a broadcast message.
+/// 2. Some of our operations (e.g. Ping) can be done indirectly -- we can ask a peer to ping
+///    another peer, and their Ack needs to tell us who the ping acknowledgement is actually for.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum SwimMessage {
+    Ping,
+    PingRequest(Peer),
+    Ack(Peer),
+    KnownPeers(Vec<Peer>),
 }
