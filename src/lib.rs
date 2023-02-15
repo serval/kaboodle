@@ -22,7 +22,7 @@
 // - proper error handling
 // - add a 'props' payload for peers to share info about themsleves
 // - Infection-Style Dissemination: Instead of propagating node failure information via multicast, protocol messages are piggybacked on the ping messages used to determine node liveness. This is equivalent to gossip dissemination.
-// - Round-Robin Probe Target Selection: Instead of randomly picking a node to probe during each protocol time step, the protocol is modified so that each node performs a round-robin selection of probe target. This bounds the worst-case detection time of the protocol, without degrading the average detection time.
+// - don't respond to join announcements 100% of the time; scale down as the size of the mesh grows to avoid overwhelming newcomers
 
 use rand::seq::SliceRandom;
 use rand_chacha::rand_core::SeedableRng;
