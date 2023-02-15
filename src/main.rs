@@ -6,7 +6,7 @@ use kaboodle::Kaboodle;
 pub mod networking;
 
 fn set_terminal_title(title: &str) {
-    print!("\x1B]0;{title}\x07");
+    println!("\x1B]0;{title}\x07");
 }
 
 #[tokio::main]
