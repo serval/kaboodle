@@ -1,5 +1,5 @@
 # Kaboodle
-<img src="https://github.com/serval/kaboodle/actions/workflows/main.yml/badge.svg alt="" />
+![](https://github.com/serval/kaboodle/actions/workflows/main.yml/badge.svg)
 
 Kaboodle is a Rust crate containing an approximate implementation of the [SWIM membership gossip protocol](http://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf), give or take some details. It can be used to discover other peers on the LAN without any central coordination.
 
