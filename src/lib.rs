@@ -50,11 +50,14 @@ mod structs;
 mod networking;
 use crate::networking::my_ipv4_addrs;
 
-/// The minimum amount of time to wait between ticks; we keep track of how long it's been since the
-/// start of the current tick and wait however long is required to keep the time between ticks as
-/// close as possible to this duration. This could become a tuneable parameter in the future, but
-/// is left as a constant for the sake of simplicity until the need arises.
-const IDEAL_TICK_DURATION: Duration = Duration::from_millis(1000);
+/// The minimum amount of time to wait between rounds of communication with the mesh; we keep track
+/// of how long it's been since the start of the current tick and wait however long is required to
+/// keep the time between ticks as close as possible to this duration. This could become a tuneable
+/// parameter in the future, but is left as a constant for the sake of simplicity for now.
+/// The SWIM paper notes that the protocol period must be at least three times longer than the
+/// estimated round-trip time within the network, but that the protocol period they use in practice
+/// is much longer than that.
+const PROTOCOL_PERIOD: Duration = Duration::from_millis(1000);
 
 /// How large a buffer to use when reading from our sockets; messages larger than this will be
 /// truncated.
@@ -65,10 +68,11 @@ const INCOMING_BUFFER_SIZE: usize = 1024;
 const NUM_INDIRECT_PING_PEERS: usize = 3;
 
 /// How long to wait for an ack to a ping or indirect ping before assuming it's never going to come.
-/// In the future, we could adjust this dynamically based on the averge ping times we're seeing.
+/// Per the SWIM paper, this could be based on an estimate of the distribution of round-trip
+/// time in the network, e.g. an average or the 99th percentile.
 const PING_TIMEOUT: Duration = Duration::from_millis(2000);
 
-/// How often to re-broadcast our Join message if we don't know about any other peers right now
+/// How often to re-broadcast our Join message if we don't know about any other peers right now.
 const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
 
 /// Data managed by a Kaboodle mesh client.
@@ -462,8 +466,11 @@ impl KaboodleInner {
     }
 
     async fn ping_random_peer(&mut self) {
-        // Ping a random peer
-        // - pick a known peer P
+        // The original SWIM implementation chose a peer to ping at random, but detailed an
+        // improvement for round-robin target peer selection in section 4.3. Choosing a target
+        // deterministically gives us a time bounded completeness guarantee: the time interval
+        // between a peer becoming unavailable and the mesh detecting it is no more than 2 * N
+        // ticks, where N is the total number of peers.
         let mut known_peers = self.known_peers.lock().await;
         let mut non_suspected_peers = known_peers
             .iter()
@@ -519,7 +526,7 @@ impl KaboodleInner {
 
             // Wait until the next tick
             let time_since_tick_start = Instant::now().duration_since(tick_start);
-            let required_delay = IDEAL_TICK_DURATION - time_since_tick_start;
+            let required_delay = PROTOCOL_PERIOD - time_since_tick_start;
             if required_delay.as_millis() > 0 {
                 sleep(required_delay).await;
             }

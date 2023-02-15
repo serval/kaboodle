@@ -42,6 +42,14 @@ pub enum RunState {
 }
 
 /// The SwimBroadcast enum represents messages that we broadcast to the entire mesh.
+/// Section 4 of the SWIM paper mentions that failure information can be piggybacked into the non-
+/// broadcast ping and ack messages and (section 4.1) disseminated using a gossip protocol, e.g.
+/// adding failure info with a TTL that is decremented by each host before being passed along and
+/// stopping when this TTL gets to 0. This would decrease our reliance on multicast support on the
+/// local network and is something we should consider for the future, although we still require
+/// multicast to work for initial peer discovery. A future iteration of this library may include the
+/// ability to work without multicast at all, so long as an initial seed peer is given to us
+/// somehow.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SwimBroadcast {
     Join(Peer),
