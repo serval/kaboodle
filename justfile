@@ -2,10 +2,15 @@
 help:
     just -l
 
-# Run several copies of the app in a 2x2 grid
+# Run a single copy of the app
+@run:
+    cargo run
+
+# Run four copies of the app in a 2x2 grid
 @run2x2:
     cargo build && zellij --layout 2x2-layout.kdl
 
+# Run two copies of the app in a 2x1 grid
 @run2x1:
     cargo build && zellij --layout 2x1-layout.kdl
 
