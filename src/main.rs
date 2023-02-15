@@ -40,8 +40,12 @@ async fn main() {
             let fingerprint = kaboodle.fingerprint().await;
             let fingerprint = &fingerprint[0..8];
             log::info!("== Peers: {} ({})", num_peers, fingerprint);
-            for (peer, peer_state) in known_peers.iter() {
+            let num_peers_to_print = 8;
+            for (peer, peer_state) in known_peers.iter().take(num_peers_to_print) {
                 log::info!("+ {peer}:\t{peer_state}");
+            }
+            if num_peers > num_peers_to_print {
+                log::info!("+ ... and {} more", num_peers - num_peers_to_print);
             }
             set_terminal_title(&format!("{self_addr} {num_peers} {fingerprint}"));
         }
