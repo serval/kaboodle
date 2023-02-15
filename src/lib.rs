@@ -24,9 +24,8 @@
 // - Infection-Style Dissemination: Instead of propagating node failure information via multicast, protocol messages are piggybacked on the ping messages used to determine node liveness. This is equivalent to gossip dissemination.
 // - don't respond to join announcements 100% of the time; scale down as the size of the mesh grows to avoid overwhelming newcomers
 
-use rand::seq::SliceRandom;
-use rand_chacha::rand_core::SeedableRng;
-use rand_chacha::ChaChaRng;
+use rand::{seq::SliceRandom, Rng};
+use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use sha256::digest;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::{
@@ -304,6 +303,24 @@ impl KaboodleInner {
                     log::info!("Got a join from {peer}");
                     let mut known_peers = self.known_peers.lock().await;
                     known_peers.insert(peer, PeerState::Known(Instant::now()));
+
+                    // Figure out whether we should send the new peer our list of known peers
+                    // Everyone in the mesh receives these broadcasts, so we don't want to respond
+                    // 100% of the time -- otherwise, new peers in large meshes would receive an
+                    // avalanche of redundant peer lists from every other peer when they first show
+                    // up. The exact formula may get tweaked over time, but the intention is to
+                    // ramp down from a 100% chance if we don't know of any other peers yet to a
+                    // minimum of 1% once we have some sufficient number.
+                    // See Section 3.2 in the SWIM paper for more thoughts on this logic.
+                    let num_other_peers = known_peers.len() - 2; // minus ourselves and the newcomer
+                    let percent_chance_of_sending_peers =
+                        std::cmp::max(1, 100 - usize::pow(num_other_peers, 2)) as f32 / 100.0;
+                    let should_send_peers = self.rng.gen::<f32>() < percent_chance_of_sending_peers;
+                    if !should_send_peers {
+                        log::info!("Not sending known peers to new peer");
+                        drop(known_peers);
+                        continue;
+                    }
 
                     // Send a list of known peers to the newcomer
                     // todo: we might need to only send a subset in order to keep packet size down;
