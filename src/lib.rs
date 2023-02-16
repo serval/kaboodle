@@ -24,7 +24,7 @@
 // - Infection-Style Dissemination: Instead of propagating node failure information via multicast, protocol messages are piggybacked on the ping messages used to determine node liveness. This is equivalent to gossip dissemination.
 // - don't respond to join announcements 100% of the time; scale down as the size of the mesh grows to avoid overwhelming newcomers
 
-use rand::{seq::SliceRandom, Rng};
+use rand::seq::SliceRandom;
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use sha256::digest;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
