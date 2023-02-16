@@ -312,15 +312,18 @@ impl KaboodleInner {
                     // ramp down from a 100% chance if we don't know of any other peers yet to a
                     // minimum of 1% once we have some sufficient number.
                     // See Section 3.2 in the SWIM paper for more thoughts on this logic.
-                    let num_other_peers = known_peers.len() - 2; // minus ourselves and the newcomer
-                    let percent_chance_of_sending_peers =
-                        std::cmp::max(1, 100 - usize::pow(num_other_peers, 2)) as f32 / 100.0;
-                    let should_send_peers = self.rng.gen::<f32>() < percent_chance_of_sending_peers;
-                    if !should_send_peers {
-                        log::info!("Not sending known peers to new peer");
-                        drop(known_peers);
-                        continue;
-                    }
+                    // TODO: temporarily commented out because this logic makes large numbers of
+                    // peers more likely to accidentally end up in several sub-meshes, rather than
+                    // one large mesh. More thought required.
+                    // let num_other_peers = known_peers.len() - 2; // minus ourselves and the newcomer
+                    // let percent_chance_of_sending_peers =
+                    //     std::cmp::max(1, 100 - usize::pow(num_other_peers, 2)) as f32 / 100.0;
+                    // let should_send_peers = self.rng.gen::<f32>() < percent_chance_of_sending_peers;
+                    // if !should_send_peers {
+                    //     log::info!("Not sending known peers to new peer");
+                    //     drop(known_peers);
+                    //     continue;
+                    // }
 
                     // Send a list of known peers to the newcomer
                     // todo: we might need to only send a subset in order to keep packet size down;
