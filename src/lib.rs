@@ -63,6 +63,10 @@ const PROTOCOL_PERIOD: Duration = Duration::from_millis(1000);
 // TODO: Figure out what an actually optimal size would be.
 const INCOMING_BUFFER_SIZE: usize = 1024;
 
+/// Old recently a peer must have been put into the Known state for us to include them in the list
+/// of peers we send in response to KnownPeersRequest messages.
+const MAX_PEER_SHARE_AGE: Duration = Duration::from_millis(10000);
+
 /// How many other peers to ask to ping an unresponsive peer on our behalf.
 const NUM_INDIRECT_PING_PEERS: usize = 3;
 
@@ -78,6 +82,16 @@ const PING_TIMEOUT: Duration = Duration::from_millis(2000);
 
 /// How often to re-broadcast our Join message if we don't know about any other peers right now.
 const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
+
+/// How many characters from the full mesh fingerprint to use in short fingerprints (which are sent
+/// as part of some SwimMessage values).
+const SHORT_FINGERPRINT_LENGTH: usize = 8;
+
+fn generate_fingerprint(known_peers: &HashMap<SocketAddr, PeerState>) -> String {
+    let mut hosts: Vec<String> = known_peers.keys().map(|peer| peer.to_string()).collect();
+    hosts.sort();
+    digest(hosts.join(","))
+}
 
 /// Data managed by a Kaboodle mesh client.
 #[derive(Debug)]
@@ -198,9 +212,7 @@ impl Kaboodle {
     /// should be stable against ordering differences across different hosts.
     pub async fn fingerprint(&self) -> String {
         let known_peers = self.known_peers.lock().await;
-        let mut hosts: Vec<String> = known_peers.keys().map(|peer| peer.to_string()).collect();
-        hosts.sort();
-        digest(hosts.join(","))
+        generate_fingerprint(&known_peers)
     }
 
     /// Get the address we use for one-to-one UDP messages, if we are currently running.
@@ -334,11 +346,8 @@ impl KaboodleInner {
                     // todo: we might need to only send a subset in order to keep packet size down;
                     // that is a problem for another day.
                     let other_peers: Vec<Peer> = known_peers
-                        .iter()
-                        // todo: maybe exclude peers in the  WaitingForIndirectPing state, since
-                        // they are suspect.
-                        .filter(|(other_peer, _)| **other_peer != peer)
-                        .map(|(other_peer, _)| *other_peer)
+                        .keys()
+                        .map(|other_peer| other_peer.to_owned())
                         .collect();
                     drop(known_peers);
 
@@ -361,33 +370,97 @@ impl KaboodleInner {
             log::info!("RECV [{sender}] {msg:?}");
 
             match msg {
-                SwimMessage::Ack(peer) => {
-                    // Insert the peer into our known_peers map with None as their "suspected since"
-                    // timestamp; if they were already in there with a suspected since timestamp,
-                    // this will reset them back to being non-suspected.
+                SwimMessage::Ack(peer, their_fingerprint, their_num_peers) => {
+                    // Insert the peer into our known_peers map as Known; if they were already in
+                    // there in a WaitingFor... state, this will reset them back to being known.
                     let mut known_peers = self.known_peers.lock().await;
                     known_peers.insert(peer, PeerState::Known(Instant::now()));
+                    let our_fingerprint =
+                        generate_fingerprint(&known_peers)[0..SHORT_FINGERPRINT_LENGTH].to_owned();
+                    let our_num_peers = known_peers.len() as u32;
                     drop(known_peers);
 
                     if let Some(observers) = self.curious_peers.remove(&peer) {
                         // Some of our peers were waiting to hear back about this ping
                         for observer in observers {
                             // todo: run these in parallel
-                            self.send_msg(&observer, &SwimMessage::Ack(peer)).await;
+                            self.send_msg(
+                                &observer,
+                                &SwimMessage::Ack(peer, our_fingerprint.to_owned(), our_num_peers),
+                            )
+                            .await;
                         }
                     }
+
+                    self.maybe_sync_known_peers(
+                        peer,
+                        our_fingerprint,
+                        our_num_peers,
+                        their_fingerprint,
+                        their_num_peers,
+                    )
+                    .await;
                 }
                 SwimMessage::KnownPeers(peers) => {
                     let mut known_peers = self.known_peers.lock().await;
-                    let now = Instant::now();
+                    let timestamp = Instant::now().checked_sub(MAX_PEER_SHARE_AGE).unwrap();
                     for peer in peers {
-                        known_peers.entry(peer).or_insert(PeerState::Known(now));
+                        known_peers
+                            .entry(peer)
+                            .or_insert(PeerState::Known(timestamp));
                     }
                     drop(known_peers);
                 }
-                SwimMessage::Ping => {
-                    self.send_msg(&sender, &SwimMessage::Ack(self.self_addr))
+                SwimMessage::KnownPeersRequest(their_fingerprint, their_num_peers) => {
+                    let mut known_peers = self.known_peers.lock().await;
+                    known_peers.insert(sender, PeerState::Known(Instant::now()));
+                    let our_fingerprint =
+                        generate_fingerprint(&known_peers)[0..SHORT_FINGERPRINT_LENGTH].to_owned();
+                    let our_num_peers = known_peers.len() as u32;
+
+                    // Send back a list of every other peer (besides ourselves and the requestor)
+                    // who is in the Known state. We are specifically excluding peers in the
+                    // WaitingFor... states because otherwise, we are more likely to accidentally
+                    // propagate echoes of down-but-not-yet-noticed-down nodes.
+                    let other_peers = known_peers
+                        .iter()
+                        .filter(|(other_peer, other_state)| {
+                            **other_peer != self.self_addr
+                                && **other_peer != sender
+                                && match other_state {
+                                    PeerState::Known(ts) => {
+                                        Instant::now().duration_since(*ts) < MAX_PEER_SHARE_AGE
+                                    }
+                                    _ => false,
+                                }
+                        })
+                        .map(|(other_peer, _)| other_peer.to_owned())
+                        .collect();
+                    drop(known_peers);
+                    self.send_msg(&sender, &SwimMessage::KnownPeers(other_peers))
                         .await;
+
+                    self.maybe_sync_known_peers(
+                        sender,
+                        our_fingerprint,
+                        our_num_peers,
+                        their_fingerprint,
+                        their_num_peers,
+                    )
+                    .await;
+                }
+                SwimMessage::Ping => {
+                    let known_peers = self.known_peers.lock().await;
+                    let our_fingerprint = generate_fingerprint(&known_peers);
+                    let our_num_peers = known_peers.len() as u32;
+                    drop(known_peers);
+
+                    self.send_msg(
+                        &sender,
+                        &SwimMessage::Ack(self.self_addr, our_fingerprint, our_num_peers),
+                    )
+                    .await;
+
                     let mut known_peers = self.known_peers.lock().await;
                     known_peers.insert(sender, PeerState::Known(Instant::now()));
                     drop(known_peers);
@@ -523,6 +596,38 @@ impl KaboodleInner {
 
         // Comment out the following line to test indirect pinging
         self.send_msg(target_peer, &SwimMessage::Ping).await;
+    }
+
+    async fn maybe_sync_known_peers(
+        &mut self,
+        peer: SocketAddr,
+        our_fingerprint: String,
+        our_num_peers: u32,
+        their_fingerprint: String,
+        their_num_peers: u32,
+    ) {
+        if our_fingerprint == their_fingerprint {
+            return;
+        }
+        if our_fingerprint.len() != their_fingerprint.len() {
+            log::warn!(
+                "maybe_sync_known_peers: fingerprints are different lengths (ours: {}, theirs: {})",
+                our_fingerprint.len(),
+                their_fingerprint.len()
+            );
+        }
+
+        if our_num_peers > their_num_peers {
+            // We know more about them than they know about us; they'll send us a KnownPeersRequest
+            log::info!("maybe_sync_known_peers: expect to receive a KnownPeersRequest");
+            return;
+        }
+
+        self.send_msg(
+            &peer,
+            &SwimMessage::KnownPeersRequest(our_fingerprint, our_num_peers),
+        )
+        .await;
     }
 
     /// Runs the next round of mesh maintainance. The logic here is based on the SWIM paper by
