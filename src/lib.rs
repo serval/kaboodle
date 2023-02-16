@@ -24,7 +24,7 @@
 // - Infection-Style Dissemination: Instead of propagating node failure information via multicast, protocol messages are piggybacked on the ping messages used to determine node liveness. This is equivalent to gossip dissemination.
 // - don't respond to join announcements 100% of the time; scale down as the size of the mesh grows to avoid overwhelming newcomers
 
-use rand::seq::SliceRandom;
+use rand::seq::{IteratorRandom, SliceRandom};
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use sha256::digest;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
@@ -65,6 +65,11 @@ const INCOMING_BUFFER_SIZE: usize = 1024;
 
 /// How many other peers to ask to ping an unresponsive peer on our behalf.
 const NUM_INDIRECT_PING_PEERS: usize = 3;
+
+/// How many of our longest-since-heard-from peers to use as a potential candidate for our next
+/// ping; we'll choose one of these at random. Choosing a random peer from a set of the N oldest
+/// helps speed up down peer discovery in large meshes that all spun up at similar times.
+const NUM_CANDIDATE_TARGET_PEERS: usize = 5;
 
 /// How long to wait for an ack to a ping or indirect ping before assuming it's never going to come.
 /// Per the SWIM paper, this could be based on an estimate of the distribution of round-trip
@@ -506,7 +511,7 @@ impl KaboodleInner {
         // Find the peer with the oldest "Known" timestamp; this is the one that our knowledge of
         // is most out of date.
         non_suspected_peers.sort_by_key(|(_, last_pinged)| *last_pinged);
-        let Some((target_peer, _)) = non_suspected_peers.first() else {
+        let Some((target_peer, _)) = non_suspected_peers.iter().take(NUM_CANDIDATE_TARGET_PEERS).choose(&mut self.rng) else {
             // No one to ping
             return;
         };
