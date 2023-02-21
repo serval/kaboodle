@@ -1,4 +1,4 @@
-use std::{thread::sleep, time::Duration};
+use std::{process::exit, thread::sleep, time::Duration};
 
 use dotenvy::dotenv;
 use kaboodle::Kaboodle;
@@ -20,7 +20,10 @@ async fn main() {
     let mut kaboodle = Kaboodle::new(7475);
 
     // Begin discovering peers
-    kaboodle.start().await;
+    if let Err(err) = kaboodle.start().await {
+        log::error!("Failed to start: {err:?}");
+        exit(1);
+    }
 
     let Some(self_addr) = &kaboodle.self_addr() else {
         panic!("Expected us to have a self address by now");
