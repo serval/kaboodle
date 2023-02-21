@@ -65,7 +65,7 @@ const PROTOCOL_PERIOD: Duration = Duration::from_millis(1000);
 // TODO: Figure out what an actually optimal size would be.
 const INCOMING_BUFFER_SIZE: usize = 1024;
 
-/// Old recently a peer must have been put into the Known state for us to include them in the list
+/// How recently a peer must have been put into the Known state for us to include them in the list
 /// of peers we send in response to KnownPeersRequest messages.
 const MAX_PEER_SHARE_AGE: Duration = Duration::from_millis(10000);
 
