@@ -28,26 +28,27 @@ async fn main() {
     set_terminal_title(&self_addr.to_string());
     log::info!("I am {self_addr}");
 
+    let mut prev_title = String::from("");
+
     loop {
         // Dump our list of peers out
         let known_peers = kaboodle.peer_states().await;
-        if known_peers.len() < 2 {
-            //  Note: we're always in the list of peers, hence the length check rather than an .is_empty()
-            log::info!("== Peers: none");
-            set_terminal_title(&self_addr.to_string());
-        } else {
-            let num_peers = known_peers.len();
-            let fingerprint = kaboodle.fingerprint().await;
-            let fingerprint = &fingerprint[0..8];
-            log::info!("== Peers: {} ({})", num_peers, fingerprint);
-            let num_peers_to_print = usize::max_value(); // adjust this downward to only show a subset
-            for (peer, peer_state) in known_peers.iter() {
-                log::info!("+ {peer}:\t{peer_state}");
-            }
-            if num_peers > num_peers_to_print {
-                log::info!("+ ... and {} more", num_peers - num_peers_to_print);
-            }
-            set_terminal_title(&format!("{self_addr} {num_peers} {fingerprint}"));
+
+        let num_peers = known_peers.len();
+        let fingerprint = kaboodle.fingerprint().await;
+        let fingerprint = &fingerprint[0..8];
+        log::info!("== Peers: {} ({})", num_peers, fingerprint);
+        let num_peers_to_print = usize::max_value(); // adjust this downward to only show a subset
+        for (peer, peer_state) in known_peers.iter() {
+            log::info!("+ {peer}:\t{peer_state}");
+        }
+        if num_peers > num_peers_to_print {
+            log::info!("+ ... and {} more", num_peers - num_peers_to_print);
+        }
+        let title = format!("{self_addr} {num_peers} {fingerprint}");
+        if title != prev_title {
+            set_terminal_title(&title);
+            prev_title = title;
         }
 
         sleep(Duration::from_millis(1000));
