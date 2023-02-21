@@ -36,7 +36,6 @@ async fn main() {
 
         let num_peers = known_peers.len();
         let fingerprint = kaboodle.fingerprint().await;
-        let fingerprint = &fingerprint[0..8];
         log::info!("== Peers: {} ({})", num_peers, fingerprint);
         let num_peers_to_print = usize::max_value(); // adjust this downward to only show a subset
         for (peer, peer_state) in known_peers.iter() {

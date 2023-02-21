@@ -68,7 +68,14 @@ pub enum SwimBroadcast {
 pub enum SwimMessage {
     Ping,
     PingRequest(Peer),
-    Ack(Peer, String, u32),
+    Ack {
+        peer: Peer,
+        fingerprint: u32,
+        num_peers: u32,
+    },
     KnownPeers(Vec<Peer>),
-    KnownPeersRequest(String, u32),
+    KnownPeersRequest {
+        fingerprint: u32,
+        num_peers: u32,
+    },
 }
