@@ -29,7 +29,6 @@ use rand::{
     Rng,
 };
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
-use sha256::digest;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::{
     collections::HashMap,
@@ -86,14 +85,14 @@ const PING_TIMEOUT: Duration = Duration::from_millis(2000);
 /// How often to re-broadcast our Join message if we don't know about any other peers right now.
 const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
 
-/// How many characters from the full mesh fingerprint to use in short fingerprints (which are sent
-/// as part of some SwimMessage values).
-const SHORT_FINGERPRINT_LENGTH: usize = 8;
-
-fn generate_fingerprint(known_peers: &HashMap<SocketAddr, PeerState>) -> String {
+/// Generates a CRC32 hash of the given list of peers.
+/// Because our only goal is to detect differences between two peer's understanding of the mesh,
+/// rather than guard against malicious tampering, CRC32 is a good fit: it's sufficiently robust for
+/// the task at hand, fast to compute, and has a very compact representation (a single u32).
+fn generate_fingerprint(known_peers: &HashMap<SocketAddr, PeerState>) -> u32 {
     let mut hosts: Vec<String> = known_peers.keys().map(|peer| peer.to_string()).collect();
     hosts.sort();
-    digest(hosts.join(","))
+    crc32fast::hash(hosts.join(",").as_bytes())
 }
 
 /// Data managed by a Kaboodle mesh client.
@@ -211,9 +210,9 @@ impl Kaboodle {
             .expect("Failed to send cancellation request to daemon thread");
     }
 
-    /// Calculate an SHA-256 hash of the current list of peers. The list is sorted before hashing, so it
-    /// should be stable against ordering differences across different hosts.
-    pub async fn fingerprint(&self) -> String {
+    /// Calculate an CRC-32 hash of the current list of peers. The list is sorted before hashing, so
+    /// it should be stable against ordering differences across different hosts.
+    pub async fn fingerprint(&self) -> u32 {
         let known_peers = self.known_peers.lock().await;
         generate_fingerprint(&known_peers)
     }
@@ -370,13 +369,16 @@ impl KaboodleInner {
             log::info!("RECV [{sender}] {msg:?}");
 
             match msg {
-                SwimMessage::Ack(peer, their_fingerprint, their_num_peers) => {
+                SwimMessage::Ack {
+                    peer,
+                    fingerprint: their_fingerprint,
+                    num_peers: their_num_peers,
+                } => {
                     // Insert the peer into our known_peers map as Known; if they were already in
                     // there in a WaitingFor... state, this will reset them back to being known.
                     let mut known_peers = self.known_peers.lock().await;
                     known_peers.insert(peer, PeerState::Known(Instant::now()));
-                    let our_fingerprint =
-                        generate_fingerprint(&known_peers)[0..SHORT_FINGERPRINT_LENGTH].to_owned();
+                    let our_fingerprint = generate_fingerprint(&known_peers);
                     let our_num_peers = known_peers.len() as u32;
                     drop(known_peers);
 
@@ -386,7 +388,11 @@ impl KaboodleInner {
                             // todo: run these in parallel
                             self.send_msg(
                                 &observer,
-                                &SwimMessage::Ack(peer, our_fingerprint.to_owned(), our_num_peers),
+                                &SwimMessage::Ack {
+                                    peer,
+                                    fingerprint: our_fingerprint,
+                                    num_peers: our_num_peers,
+                                },
                             )
                             .await;
                         }
@@ -411,11 +417,13 @@ impl KaboodleInner {
                     }
                     drop(known_peers);
                 }
-                SwimMessage::KnownPeersRequest(their_fingerprint, their_num_peers) => {
+                SwimMessage::KnownPeersRequest {
+                    fingerprint: their_fingerprint,
+                    num_peers: their_num_peers,
+                } => {
                     let mut known_peers = self.known_peers.lock().await;
                     known_peers.insert(sender, PeerState::Known(Instant::now()));
-                    let our_fingerprint =
-                        generate_fingerprint(&known_peers)[0..SHORT_FINGERPRINT_LENGTH].to_owned();
+                    let our_fingerprint = generate_fingerprint(&known_peers);
                     let our_num_peers = known_peers.len() as u32;
 
                     // Send back a list of every other peer (besides ourselves and the requestor)
@@ -457,7 +465,11 @@ impl KaboodleInner {
 
                     self.send_msg(
                         &sender,
-                        &SwimMessage::Ack(self.self_addr, our_fingerprint, our_num_peers),
+                        &SwimMessage::Ack {
+                            peer: self.self_addr,
+                            fingerprint: our_fingerprint,
+                            num_peers: our_num_peers,
+                        },
                     )
                     .await;
 
@@ -601,20 +613,13 @@ impl KaboodleInner {
     async fn maybe_sync_known_peers(
         &mut self,
         peer: SocketAddr,
-        our_fingerprint: String,
+        our_fingerprint: u32,
         our_num_peers: u32,
-        their_fingerprint: String,
+        their_fingerprint: u32,
         their_num_peers: u32,
     ) {
         if our_fingerprint == their_fingerprint {
             return;
-        }
-        if our_fingerprint.len() != their_fingerprint.len() {
-            log::warn!(
-                "maybe_sync_known_peers: fingerprints are different lengths (ours: {}, theirs: {})",
-                our_fingerprint.len(),
-                their_fingerprint.len()
-            );
         }
 
         if our_num_peers > their_num_peers {
@@ -625,7 +630,10 @@ impl KaboodleInner {
 
         self.send_msg(
             &peer,
-            &SwimMessage::KnownPeersRequest(our_fingerprint, our_num_peers),
+            &SwimMessage::KnownPeersRequest {
+                fingerprint: our_fingerprint,
+                num_peers: our_num_peers,
+            },
         )
         .await;
     }
