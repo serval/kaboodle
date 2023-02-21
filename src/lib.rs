@@ -24,6 +24,7 @@
 // - Infection-Style Dissemination: Instead of propagating node failure information via multicast, protocol messages are piggybacked on the ping messages used to determine node liveness. This is equivalent to gossip dissemination.
 // - don't respond to join announcements 100% of the time; scale down as the size of the mesh grows to avoid overwhelming newcomers
 
+use errors::KaboodleError;
 use rand::{
     seq::{IteratorRandom, SliceRandom},
     Rng,
@@ -46,6 +47,7 @@ use tokio::{
     time::sleep,
 };
 
+mod errors;
 mod structs;
 
 mod networking;
@@ -126,18 +128,16 @@ impl Kaboodle {
     }
 
     /// Tell the client to connect to the network and find other clients.
-    pub async fn start(&mut self) {
+    pub async fn start(&mut self) -> Result<(), KaboodleError> {
         if self.state == RunState::Running {
-            return;
+            return Ok(());
         }
         self.state = RunState::Running;
 
         // Set up our main communications socket
         let sock = {
             let ip = my_ipv4_addrs()[0];
-            UdpSocket::bind(format!("{ip}:0"))
-                .await
-                .expect("Failed to bind")
+            UdpSocket::bind(format!("{ip}:0")).await?
         };
 
         // Put our socket address into the known peers list
@@ -160,17 +160,14 @@ impl Kaboodle {
             self.broadcast_port,
         ));
         let broadcast_sock = {
-            let broadcast_sock =
-                Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
-            broadcast_sock.set_broadcast(true).unwrap();
-            broadcast_sock.set_nonblocking(true).unwrap();
-            broadcast_sock.set_reuse_address(true).unwrap();
-            broadcast_sock.set_reuse_port(true).unwrap();
-            broadcast_sock
-                .bind(&SockAddr::from(broadcast_inbound_addr))
-                .expect("Failed to bind for broadcast");
+            let broadcast_sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+            broadcast_sock.set_broadcast(true)?;
+            broadcast_sock.set_nonblocking(true)?;
+            broadcast_sock.set_reuse_address(true)?;
+            broadcast_sock.set_reuse_port(true)?;
+            broadcast_sock.bind(&SockAddr::from(broadcast_inbound_addr))?;
             let broadcast_sock: std::net::UdpSocket = broadcast_sock.into();
-            UdpSocket::from_std(broadcast_sock).unwrap()
+            UdpSocket::from_std(broadcast_sock)?
         };
 
         let (cancellation_tx, cancellation_rx) = tokio::sync::mpsc::channel(1);
@@ -191,25 +188,28 @@ impl Kaboodle {
         tokio::spawn(async move {
             inner.run().await;
         });
+
+        Ok(())
     }
 
     /// Disconnect this client from the mesh network.
-    pub async fn stop(&mut self) {
+    pub async fn stop(&mut self) -> Result<(), KaboodleError> {
         if self.state != RunState::Running {
-            return;
+            return Ok(());
         }
         self.state = RunState::Stopped;
 
         let Some(cancellation_tx) = self.cancellation_tx.take() else {
             // This should not happen
             log::warn!("Unable to cancel daemon thread because we have no communication channel; this is a programming error.");
-            return;
+            return Err(KaboodleError::StoppingFailed(String::from("No communication channel")));
         };
 
-        cancellation_tx
-            .send(())
-            .await
-            .expect("Failed to send cancellation request to daemon thread");
+        if let Err(err) = cancellation_tx.send(()).await {
+            return Err(KaboodleError::StoppingFailed(err.to_string()));
+        }
+
+        Ok(())
     }
 
     /// Calculate an CRC-32 hash of the current list of peers. The list is sorted before hashing, so
@@ -255,40 +255,46 @@ struct KaboodleInner {
 
 impl KaboodleInner {
     /// Broadcasts the given message to the entire mesh.
-    async fn broadcast_msg(&self, msg: &SwimBroadcast) {
+    async fn broadcast_msg(&self, msg: &SwimBroadcast) -> Result<(), KaboodleError> {
         log::info!("BROADCAST {msg:?}");
         let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
         self.broadcast_sock
             .send_to(&out_bytes, self.broadcast_outbound_addr)
-            .await
-            .expect("Failed to send");
+            .await?;
+        Ok(())
     }
 
     /// Sends the given mesh to a single specific peer.
-    async fn send_msg(&self, target_peer: &SocketAddr, msg: &SwimMessage) {
+    async fn send_msg(
+        &self,
+        target_peer: &SocketAddr,
+        msg: &SwimMessage,
+    ) -> Result<(), KaboodleError> {
         log::info!("SEND [{target_peer}] {msg:?}");
         let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
-        self.sock
-            .send_to(&out_bytes, target_peer)
-            .await
-            .expect("Failed to send");
+        self.sock.send_to(&out_bytes, target_peer).await?;
+        Ok(())
     }
 
     async fn maybe_broadcast_join(&mut self) {
         let now = Instant::now();
-        let should_broadcast = if let Some(last_broadcast_time) = self.last_broadcast_time {
+        if let Some(last_broadcast_time) = self.last_broadcast_time {
             // Re-broadcast if we only know about ourself and it has been a while since we tried
             let known_peers = self.known_peers.lock().await;
-            known_peers.len() == 1
-                && now.duration_since(last_broadcast_time) >= REBROADCAST_INTERVAL
-        } else {
-            true
-        };
-        if should_broadcast {
-            // Broadcast our existence
-            self.last_broadcast_time = Some(now);
-            self.broadcast_msg(&SwimBroadcast::Join(self.self_addr))
-                .await;
+            if now.duration_since(last_broadcast_time) < REBROADCAST_INTERVAL
+                || known_peers.len() > 1
+            {
+                return;
+            }
+        }
+
+        // Broadcast our existence
+        self.last_broadcast_time = Some(now);
+        if let Err(err) = self
+            .broadcast_msg(&SwimBroadcast::Join(self.self_addr))
+            .await
+        {
+            log::warn!("Failed to broadcast our join message: {err:?}");
         }
     }
 
@@ -299,6 +305,9 @@ impl KaboodleInner {
         let mut buf = [0; INCOMING_BUFFER_SIZE];
         while let Ok((_len, sender)) = self.broadcast_sock.try_recv_from(&mut buf) {
             let Ok(msg) = bincode::deserialize::<SwimBroadcast>(&buf) else {
+                // This can happen if there are multiple incompatible versions of Kaboodle running
+                // at the same time -- e.g. if we've introduced a breaking change to the
+                // SwimBroadcast enum.
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
@@ -353,8 +362,16 @@ impl KaboodleInner {
                     drop(known_peers);
 
                     if !other_peers.is_empty() {
-                        self.send_msg(&peer, &SwimMessage::KnownPeers(other_peers))
-                            .await;
+                        if let Err(err) = self
+                            .send_msg(&peer, &SwimMessage::KnownPeers(other_peers))
+                            .await
+                        {
+                            // Log a warning so we know something went wrong, but there's not actually
+                            // anything to be done in this case -- so long as at least one other
+                            // member of the mesh succesfully sends a response to the newcomer, we
+                            // should be okay.
+                            log::warn!("Failed to send known peers to newly joined peer: {err:?}");
+                        }
                     }
                 }
             }
@@ -365,6 +382,9 @@ impl KaboodleInner {
         let mut buf = [0; INCOMING_BUFFER_SIZE];
         while let Ok((_len, sender)) = self.sock.try_recv_from(&mut buf) {
             let Ok(msg) = bincode::deserialize::<SwimMessage>(&buf) else {
+                // This can happen if there are multiple incompatible versions of Kaboodle running
+                // at the same time -- e.g. if we've introduced a breaking change to the SwimMessage
+                // enum.
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
@@ -386,15 +406,21 @@ impl KaboodleInner {
                         // Some of our peers were waiting to hear back about this ping
                         for observer in observers {
                             // todo: run these in parallel
-                            self.send_msg(
-                                &observer,
-                                &SwimMessage::Ack {
-                                    peer,
-                                    fingerprint: their_fingerprint,
-                                    num_peers: their_num_peers,
-                                },
-                            )
-                            .await;
+                            if let Err(err) = self
+                                .send_msg(
+                                    &observer,
+                                    &SwimMessage::Ack {
+                                        peer,
+                                        fingerprint: their_fingerprint,
+                                        num_peers: their_num_peers,
+                                    },
+                                )
+                                .await
+                            {
+                                log::warn!(
+                                    "Failed to send indirect ping response {observer}: {err:?}"
+                                );
+                            }
                         }
                     }
 
@@ -437,8 +463,12 @@ impl KaboodleInner {
                         .map(|(other_peer, _)| other_peer.to_owned())
                         .collect();
                     drop(known_peers);
-                    self.send_msg(&sender, &SwimMessage::KnownPeers(other_peers))
-                        .await;
+                    if let Err(err) = self
+                        .send_msg(&sender, &SwimMessage::KnownPeers(other_peers))
+                        .await
+                    {
+                        log::warn!("Failed to reply to known peer request: {err:?}");
+                    }
 
                     self.maybe_sync_known_peers(sender, their_fingerprint, their_num_peers)
                         .await;
@@ -449,15 +479,19 @@ impl KaboodleInner {
                     let our_num_peers = known_peers.len() as u32;
                     drop(known_peers);
 
-                    self.send_msg(
-                        &sender,
-                        &SwimMessage::Ack {
-                            peer: self.self_addr,
-                            fingerprint: our_fingerprint,
-                            num_peers: our_num_peers,
-                        },
-                    )
-                    .await;
+                    if let Err(err) = self
+                        .send_msg(
+                            &sender,
+                            &SwimMessage::Ack {
+                                peer: self.self_addr,
+                                fingerprint: our_fingerprint,
+                                num_peers: our_num_peers,
+                            },
+                        )
+                        .await
+                    {
+                        log::warn!("Failed to reply to known ping request: {err:?}");
+                    }
 
                     let mut known_peers = self.known_peers.lock().await;
                     known_peers.insert(sender, PeerState::Known(Instant::now()));
@@ -472,7 +506,9 @@ impl KaboodleInner {
                     }
                     self.curious_peers.insert(peer, observers);
 
-                    self.send_msg(&peer, &SwimMessage::Ping).await;
+                    if let Err(err) = self.send_msg(&peer, &SwimMessage::Ping).await {
+                        log::warn!("Failed to send indirect ping on behalf of {sender:?}: {err:?}");
+                    }
                 }
             }
         }
@@ -530,7 +566,9 @@ impl KaboodleInner {
                     let msg = SwimMessage::PingRequest(*peer);
                     for indirect_ping_peer in indirect_ping_peers {
                         // todo: run in parallel
-                        self.send_msg(indirect_ping_peer, &msg).await;
+                        if let Err(err) = self.send_msg(indirect_ping_peer, &msg).await {
+                            log::warn!("Failed to send indirect peer request to {indirect_ping_peer}: {err:?}");
+                        }
                     }
                 }
                 PeerState::WaitingForIndirectPing(ping_sent) => {
@@ -556,8 +594,12 @@ impl KaboodleInner {
             known_peers.remove(&removed_peer);
             self.curious_peers.remove_entry(&removed_peer);
 
-            self.broadcast_msg(&SwimBroadcast::Failed(removed_peer))
-                .await;
+            if let Err(err) = self
+                .broadcast_msg(&SwimBroadcast::Failed(removed_peer))
+                .await
+            {
+                log::warn!("Failed to broadcast failure message about {removed_peer}: {err:?}");
+            }
         }
     }
 
@@ -593,7 +635,9 @@ impl KaboodleInner {
         drop(known_peers);
 
         // Comment out the following line to test indirect pinging
-        self.send_msg(target_peer, &SwimMessage::Ping).await;
+        if let Err(err) = self.send_msg(target_peer, &SwimMessage::Ping).await {
+            log::warn!("Failed to send ping to randomly-selected peer {target_peer}: {err:?}");
+        }
     }
 
     /// Compares our perspective on the state of the mesh to that of one of our peers, and possibly
@@ -619,14 +663,18 @@ impl KaboodleInner {
             return;
         }
 
-        self.send_msg(
-            &peer,
-            &SwimMessage::KnownPeersRequest {
-                fingerprint: our_fingerprint,
-                num_peers: our_num_peers,
-            },
-        )
-        .await;
+        if let Err(err) = self
+            .send_msg(
+                &peer,
+                &SwimMessage::KnownPeersRequest {
+                    fingerprint: our_fingerprint,
+                    num_peers: our_num_peers,
+                },
+            )
+            .await
+        {
+            log::warn!("Failed to send known peers to {peer}: {err:?}");
+        }
     }
 
     /// Runs the next round of mesh maintainance. The logic here is based on the SWIM paper by
