@@ -24,7 +24,10 @@
 // - Infection-Style Dissemination: Instead of propagating node failure information via multicast, protocol messages are piggybacked on the ping messages used to determine node liveness. This is equivalent to gossip dissemination.
 // - don't respond to join announcements 100% of the time; scale down as the size of the mesh grows to avoid overwhelming newcomers
 
-use rand::seq::{IteratorRandom, SliceRandom};
+use rand::{
+    seq::{IteratorRandom, SliceRandom},
+    Rng,
+};
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use sha256::digest;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
@@ -329,18 +332,15 @@ impl KaboodleInner {
                     // ramp down from a 100% chance if we don't know of any other peers yet to a
                     // minimum of 1% once we have some sufficient number.
                     // See Section 3.2 in the SWIM paper for more thoughts on this logic.
-                    // TODO: temporarily commented out because this logic makes large numbers of
-                    // peers more likely to accidentally end up in several sub-meshes, rather than
-                    // one large mesh. More thought required.
-                    // let num_other_peers = known_peers.len() - 2; // minus ourselves and the newcomer
-                    // let percent_chance_of_sending_peers =
-                    //     std::cmp::max(1, 100 - usize::pow(num_other_peers, 2)) as f32 / 100.0;
-                    // let should_send_peers = self.rng.gen::<f32>() < percent_chance_of_sending_peers;
-                    // if !should_send_peers {
-                    //     log::info!("Not sending known peers to new peer");
-                    //     drop(known_peers);
-                    //     continue;
-                    // }
+                    let num_other_peers = known_peers.len() - 2; // minus ourselves and the newcomer
+                    let percent_chance_of_sending_peers =
+                        std::cmp::max(1, 100 - i64::pow(num_other_peers as i64, 2)) as f64 / 100.0;
+                    let should_send_peers = self.rng.gen_bool(percent_chance_of_sending_peers);
+                    if !should_send_peers {
+                        log::info!("Not sending known peers to new peer in the hopes that someone else will");
+                        drop(known_peers);
+                        continue;
+                    }
 
                     // Send a list of known peers to the newcomer
                     // todo: we might need to only send a subset in order to keep packet size down;
