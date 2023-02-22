@@ -380,8 +380,6 @@ impl KaboodleInner {
                     // there in a WaitingFor... state, this will reset them back to being known.
                     let mut known_peers = self.known_peers.lock().await;
                     known_peers.insert(peer, PeerState::Known(Instant::now()));
-                    let our_fingerprint = generate_fingerprint(&known_peers);
-                    let our_num_peers = known_peers.len() as u32;
                     drop(known_peers);
 
                     if let Some(observers) = self.curious_peers.remove(&peer) {
@@ -392,22 +390,16 @@ impl KaboodleInner {
                                 &observer,
                                 &SwimMessage::Ack {
                                     peer,
-                                    fingerprint: our_fingerprint,
-                                    num_peers: our_num_peers,
+                                    fingerprint: their_fingerprint,
+                                    num_peers: their_num_peers,
                                 },
                             )
                             .await;
                         }
                     }
 
-                    self.maybe_sync_known_peers(
-                        peer,
-                        our_fingerprint,
-                        our_num_peers,
-                        their_fingerprint,
-                        their_num_peers,
-                    )
-                    .await;
+                    self.maybe_sync_known_peers(peer, their_fingerprint, their_num_peers)
+                        .await;
                 }
                 SwimMessage::KnownPeers(peers) => {
                     let mut known_peers = self.known_peers.lock().await;
@@ -425,8 +417,6 @@ impl KaboodleInner {
                 } => {
                     let mut known_peers = self.known_peers.lock().await;
                     known_peers.insert(sender, PeerState::Known(Instant::now()));
-                    let our_fingerprint = generate_fingerprint(&known_peers);
-                    let our_num_peers = known_peers.len() as u32;
 
                     // Send back a list of every other peer (besides ourselves and the requestor)
                     // who is in the Known state. We are specifically excluding peers in the
@@ -450,14 +440,8 @@ impl KaboodleInner {
                     self.send_msg(&sender, &SwimMessage::KnownPeers(other_peers))
                         .await;
 
-                    self.maybe_sync_known_peers(
-                        sender,
-                        our_fingerprint,
-                        our_num_peers,
-                        their_fingerprint,
-                        their_num_peers,
-                    )
-                    .await;
+                    self.maybe_sync_known_peers(sender, their_fingerprint, their_num_peers)
+                        .await;
                 }
                 SwimMessage::Ping => {
                     let known_peers = self.known_peers.lock().await;
@@ -612,14 +596,19 @@ impl KaboodleInner {
         self.send_msg(target_peer, &SwimMessage::Ping).await;
     }
 
+    /// Compares our perspective on the state of the mesh to that of one of our peers, and possibly
+    /// sends them a KnownPeersRequest if we believe they have more/better information than we do.
     async fn maybe_sync_known_peers(
         &mut self,
         peer: SocketAddr,
-        our_fingerprint: u32,
-        our_num_peers: u32,
         their_fingerprint: u32,
         their_num_peers: u32,
     ) {
+        let known_peers = self.known_peers.lock().await;
+        let our_fingerprint = generate_fingerprint(&known_peers);
+        let our_num_peers = known_peers.len() as u32;
+        drop(known_peers);
+
         if our_fingerprint == their_fingerprint {
             return;
         }
