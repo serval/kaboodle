@@ -199,6 +199,13 @@ impl Kaboodle {
         }
         self.state = RunState::Stopped;
 
+        // Remove ourself from the known peers list and forget about our soon-to-be-previous
+        // self_addr.
+        if let Some(self_addr) = self.self_addr.take() {
+            let mut known_peers = self.known_peers.lock().await;
+            known_peers.remove(&self_addr);
+        }
+
         let Some(cancellation_tx) = self.cancellation_tx.take() else {
             // This should not happen
             log::warn!("Unable to cancel daemon thread because we have no communication channel; this is a programming error.");
