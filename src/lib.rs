@@ -67,6 +67,8 @@ const INCOMING_BUFFER_SIZE: usize = 1024;
 
 /// How recently a peer must have been put into the Known state for us to include them in the list
 /// of peers we send in response to KnownPeersRequest messages.
+/// Making this duration longer will make the mesh stabilize more quickly when new peers join, but
+/// take longer to evict unresponsive peers when they leave.
 const MAX_PEER_SHARE_AGE: Duration = Duration::from_millis(10000);
 
 /// How many other peers to ask to ping an unresponsive peer on our behalf.
