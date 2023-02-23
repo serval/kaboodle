@@ -25,15 +25,16 @@
 // - don't respond to join announcements 100% of the time; scale down as the size of the mesh grows to avoid overwhelming newcomers
 
 use errors::KaboodleError;
+use if_addrs::{IfAddr, Interface};
+use networking::{create_broadcast_sockets, non_loopback_interfaces};
 use rand::{
     seq::{IteratorRandom, SliceRandom},
     Rng,
 };
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -47,11 +48,9 @@ use tokio::{
     time::sleep,
 };
 
-mod errors;
+pub mod errors;
+pub mod networking;
 mod structs;
-
-mod networking;
-use crate::networking::my_ipv4_addrs;
 
 /// The minimum amount of time to wait between rounds of communication with the mesh; we keep track
 /// of how long it's been since the start of the current tick and wait however long is required to
@@ -107,24 +106,43 @@ pub struct Kaboodle {
     broadcast_port: u16,
     self_addr: Option<SocketAddr>,
     cancellation_tx: Option<Sender<()>>,
+    interface: Interface,
 }
 
 impl Kaboodle {
     /// Create a new Kaboodle mesh client, broadcasting on the given port number. All clients using
     /// a given port number will discover and coordinate with each other; give your mesh a distinct
     /// port number that is not already well-known for another purpose.
-    pub fn new(broadcast_port: u16) -> Kaboodle {
+    pub fn new(
+        broadcast_port: u16,
+        preferred_interface: Option<Interface>,
+    ) -> Result<Kaboodle, KaboodleError> {
         // Maps from a peer's address to the known state of that peer. See PeerState for a
         // description of the individual states.
         let known_peers: HashMap<Peer, PeerState> = HashMap::new();
 
-        Kaboodle {
+        let Some(interface) = preferred_interface.or_else(|| {
+            // If no interface was provided, use the first IPv6 interface we find, and if there are
+            // no IPv6 interfaces, use the first IPv4 interface.
+            let (ipv6interfaces, ipv4interfaces): (Vec<Interface>, Vec<Interface>) = non_loopback_interfaces()
+                .into_iter()
+                .partition(|iface| matches!(iface.addr, IfAddr::V6(_)));
+
+            ipv6interfaces.get(0).or_else(|| ipv4interfaces.get(0)).cloned()
+        }) else {
+            return Err(KaboodleError::NoAvailableInterfaces);
+        };
+
+        Ok(Kaboodle {
             known_peers: Arc::new(Mutex::new(known_peers)),
             state: RunState::NotStarted,
+            interface,
             broadcast_port,
+
+            // These will get set whenever `start` is called:
             self_addr: None,
             cancellation_tx: None,
-        }
+        })
     }
 
     /// Tell the client to connect to the network and find other clients.
@@ -136,7 +154,7 @@ impl Kaboodle {
 
         // Set up our main communications socket
         let sock = {
-            let ip = my_ipv4_addrs()[0];
+            let ip = self.interface.ip();
             UdpSocket::bind(format!("{ip}:0")).await?
         };
 
@@ -148,27 +166,9 @@ impl Kaboodle {
             .await
             .insert(self_addr, PeerState::Known(Instant::now()));
 
-        // Set up our broadcast communications socket
-        // For listening to broadcasts, we need to bind our socket to 0.0.0.0:<port>, but for
-        // sending broadcasts, we need to send to 255.255.255.255:<port>.
-        let broadcast_inbound_addr = SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::new(0, 0, 0, 0),
-            self.broadcast_port,
-        ));
-        let broadcast_outbound_addr = SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::new(255, 255, 255, 255),
-            self.broadcast_port,
-        ));
-        let broadcast_sock = {
-            let broadcast_sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-            broadcast_sock.set_broadcast(true)?;
-            broadcast_sock.set_nonblocking(true)?;
-            broadcast_sock.set_reuse_address(true)?;
-            broadcast_sock.set_reuse_port(true)?;
-            broadcast_sock.bind(&SockAddr::from(broadcast_inbound_addr))?;
-            let broadcast_sock: std::net::UdpSocket = broadcast_sock.into();
-            UdpSocket::from_std(broadcast_sock)?
-        };
+        // Set up our broadcast communications sockets
+        let (broadcast_in_sock, broadcast_out_sock, broadcast_addr) =
+            create_broadcast_sockets(&self.interface, &self.broadcast_port)?;
 
         let (cancellation_tx, cancellation_rx) = tokio::sync::mpsc::channel(1);
         self.cancellation_tx = Some(cancellation_tx);
@@ -177,8 +177,9 @@ impl Kaboodle {
             sock,
             self_addr,
             rng: ChaChaRng::from_entropy(),
-            broadcast_outbound_addr,
-            broadcast_sock,
+            broadcast_addr,
+            broadcast_in_sock,
+            broadcast_out_sock,
             known_peers: self.known_peers.clone(),
             curious_peers: HashMap::new(),
             last_broadcast_time: None,
@@ -247,8 +248,9 @@ impl Kaboodle {
 struct KaboodleInner {
     rng: ChaChaRng,
     sock: UdpSocket,
-    broadcast_outbound_addr: SocketAddr,
-    broadcast_sock: UdpSocket,
+    broadcast_addr: SocketAddr,
+    broadcast_out_sock: UdpSocket,
+    broadcast_in_sock: UdpSocket,
     self_addr: SocketAddr,
     known_peers: Arc<Mutex<HashMap<Peer, PeerState>>>,
     // Maps from a peer's address to a list of other peers who would like to be informed if we get
@@ -263,10 +265,10 @@ struct KaboodleInner {
 impl KaboodleInner {
     /// Broadcasts the given message to the entire mesh.
     async fn broadcast_msg(&self, msg: &SwimBroadcast) -> Result<(), KaboodleError> {
-        log::info!("BROADCAST {msg:?}");
         let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
-        self.broadcast_sock
-            .send_to(&out_bytes, self.broadcast_outbound_addr)
+        log::info!("BROADCAST {msg:?} to {:?}", self.broadcast_addr);
+        self.broadcast_out_sock
+            .send_to(&out_bytes, self.broadcast_addr)
             .await?;
         Ok(())
     }
@@ -310,7 +312,7 @@ impl KaboodleInner {
     /// one instance will actually receive broadcast packets.
     async fn handle_incoming_broadcasts(&mut self) {
         let mut buf = [0; INCOMING_BUFFER_SIZE];
-        while let Ok((_len, sender)) = self.broadcast_sock.try_recv_from(&mut buf) {
+        while let Ok((_len, sender)) = self.broadcast_in_sock.try_recv_from(&mut buf) {
             let Ok(msg) = bincode::deserialize::<SwimBroadcast>(&buf) else {
                 // This can happen if there are multiple incompatible versions of Kaboodle running
                 // at the same time -- e.g. if we've introduced a breaking change to the
