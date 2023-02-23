@@ -65,9 +65,9 @@ async fn main() {
         exit(1);
     }
 
-    let Some(self_addr) = &kaboodle.self_addr() else {
-        panic!("Expected us to have a self address by now");
-    };
+    let self_addr = &kaboodle
+        .self_addr()
+        .expect("We should have a self address by now");
     set_terminal_title(&self_addr.to_string());
     log::info!("I am {self_addr}");
 
