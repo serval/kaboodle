@@ -124,11 +124,9 @@ impl Kaboodle {
         let Some(interface) = preferred_interface.or_else(|| {
             // If no interface was provided, use the first IPv6 interface we find, and if there are
             // no IPv6 interfaces, use the first IPv4 interface.
-            let (ipv6interfaces, ipv4interfaces): (Vec<Interface>, Vec<Interface>) = non_loopback_interfaces()
-                .into_iter()
-                .partition(|iface| matches!(iface.addr, IfAddr::V6(_)));
-
-            ipv6interfaces.get(0).or_else(|| ipv4interfaces.get(0)).cloned()
+            let non_loopbacks = non_loopback_interfaces();
+            let first_ipv6_interface = non_loopbacks.iter().find(|xs| matches!(xs.addr, IfAddr::V6(_)));
+            first_ipv6_interface.or_else(|| non_loopbacks.first()).cloned()
         }) else {
             return Err(KaboodleError::NoAvailableInterfaces);
         };
