@@ -80,11 +80,11 @@ pub fn create_broadcast_sockets(
                 sock.set_only_v6(true)?;
                 sock.set_reuse_address(true)?;
                 sock.set_reuse_port(true)?;
-
                 sock.bind(&SockAddr::from(SocketAddr::new(
                     Ipv6Addr::UNSPECIFIED.into(),
                     *broadcast_port,
                 )))?;
+
                 UdpSocket::from_std(sock.into())?
             };
             let broadcast_out_sock = {
