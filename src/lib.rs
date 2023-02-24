@@ -1,5 +1,4 @@
-#![forbid(unsafe_code)]
-#![deny(future_incompatible, missing_docs)]
+#![deny(future_incompatible, missing_docs, unsafe_code)]
 #![warn(
     missing_debug_implementations,
     rust_2018_idioms,

@@ -179,8 +179,8 @@ dependencies = [
  "dotenvy",
  "env_logger",
  "if-addrs",
+ "libc",
  "log",
- "network-interface",
  "rand",
  "rand_chacha",
  "serde",
@@ -237,18 +237,6 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.42.0",
-]
-
-[[package]]
-name = "network-interface"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0bc4480c4518eb8b2599ae2dd7a97b231178ad8fb9a3e6a854fd48a5f54e95c"
-dependencies = [
- "cc",
- "libc",
- "thiserror",
- "winapi",
 ]
 
 [[package]]
