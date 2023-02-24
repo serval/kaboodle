@@ -1,5 +1,4 @@
 //! This utility module contains some network interface conveniences.
-#![allow(missing_docs)]
 
 use if_addrs::Interface;
 use network_interface::NetworkInterfaceConfig;
