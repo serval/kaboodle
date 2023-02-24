@@ -1,7 +1,7 @@
 //! This utility module contains some network interface conveniences.
 
 use if_addrs::Interface;
-use network_interface::NetworkInterfaceConfig;
+use libc::if_nametoindex;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use tokio::net::UdpSocket;
@@ -109,12 +109,18 @@ pub fn create_broadcast_sockets(
 /// Gets the interface number for the given interface
 /// (This is what you'd see as 'index' in `ifconfig -v` and is required for setting up multicast
 /// routes for IPv6 sockets.)
+#[allow(unsafe_code)]
 pub fn get_interface_number(interface: &Interface) -> Option<u32> {
-    network_interface::NetworkInterface::show()
-        .unwrap_or_default()
-        .into_iter()
-        .find(|int| int.name == interface.name)
-        .map(|int| int.index)
+    let idx = unsafe { if_nametoindex(interface.name.as_ptr() as *const i8) };
+
+    // From `man if_nametoindex 3`:
+    // The if_nametoindex() function maps the interface name specified in ifname to its
+    // corresponding index. If the specified interface does not exist, it returns 0.
+    if idx == 0 {
+        None
+    } else {
+        Some(idx)
+    }
 }
 
 /// Get all non-loopback interfaces for this host.
