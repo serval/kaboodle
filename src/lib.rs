@@ -10,11 +10,16 @@
 //! some details. It can be used to discover other peers on the LAN without any central
 //! coordination.
 //!
-//! Kaboodle needs to be instantiated with a broadcast port number:
-//! ```rust
-//! let kaboodle = Kaboodle::new(7475);
-//! kaboodle.start().await;
-//! let peers = kaboodle.peers().await;
+//! Kaboodle needs to be instantiated with a broadcast port number and an optional preferred network
+//! interface for it to use
+//! ```rust, no_run
+//! use kaboodle::Kaboodle;
+//! async fn example() {
+//!     let preferred_interface = None;
+//!     let mut kaboodle = Kaboodle::new(7475, preferred_interface).unwrap();
+//!     kaboodle.start().await;
+//!     let peers = kaboodle.peers().await;
+//! }
 //! ```
 
 // todo
