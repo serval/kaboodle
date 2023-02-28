@@ -65,12 +65,12 @@ pub enum SwimMessage {
     PingRequest(Peer),
     Ack {
         peer: Peer,
-        fingerprint: u32,
+        mesh_fingerprint: u32,
         num_peers: u32,
     },
     KnownPeers(Vec<Peer>),
     KnownPeersRequest {
-        fingerprint: u32,
+        mesh_fingerprint: u32,
         num_peers: u32,
     },
 }

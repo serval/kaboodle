@@ -401,7 +401,7 @@ impl KaboodleInner {
             match msg {
                 SwimMessage::Ack {
                     peer,
-                    fingerprint: their_fingerprint,
+                    mesh_fingerprint: their_fingerprint,
                     num_peers: their_num_peers,
                 } => {
                     // Insert the peer into our known_peers map as Known; if they were already in
@@ -419,7 +419,7 @@ impl KaboodleInner {
                                     &observer,
                                     &SwimMessage::Ack {
                                         peer,
-                                        fingerprint: their_fingerprint,
+                                        mesh_fingerprint: their_fingerprint,
                                         num_peers: their_num_peers,
                                     },
                                 )
@@ -446,7 +446,7 @@ impl KaboodleInner {
                     drop(known_peers);
                 }
                 SwimMessage::KnownPeersRequest {
-                    fingerprint: their_fingerprint,
+                    mesh_fingerprint: their_fingerprint,
                     num_peers: their_num_peers,
                 } => {
                     let mut known_peers = self.known_peers.lock().await;
@@ -492,7 +492,7 @@ impl KaboodleInner {
                             &sender,
                             &SwimMessage::Ack {
                                 peer: self.self_addr,
-                                fingerprint: our_fingerprint,
+                                mesh_fingerprint: our_fingerprint,
                                 num_peers: our_num_peers,
                             },
                         )
@@ -675,7 +675,7 @@ impl KaboodleInner {
             .send_msg(
                 &peer,
                 &SwimMessage::KnownPeersRequest {
-                    fingerprint: our_fingerprint,
+                    mesh_fingerprint: our_fingerprint,
                     num_peers: our_num_peers,
                 },
             )
