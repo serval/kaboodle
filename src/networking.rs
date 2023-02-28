@@ -1,7 +1,6 @@
 //! This utility module contains some network interface conveniences.
 
 use if_addrs::Interface;
-use libc::if_nametoindex;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use tokio::net::UdpSocket;
@@ -57,7 +56,7 @@ pub fn create_broadcast_sockets(
             // - for sending broadcast messages, we have to explicitly tell the socket which
             //   network interface to use, otherwise it won't have a route to the multicast IP.
 
-            let Some(interface_idx) = get_interface_number(interface) else {
+            let Some(interface_idx) = interface.index else {
                 return Err(KaboodleError::UnableToFindInterfaceNumber);
             };
 
@@ -103,23 +102,6 @@ pub fn create_broadcast_sockets(
 
             Ok((broadcast_in_sock, broadcast_out_sock, broadcast_socket_addr))
         }
-    }
-}
-
-/// Gets the interface number for the given interface
-/// (This is what you'd see as 'index' in `ifconfig -v` and is required for setting up multicast
-/// routes for IPv6 sockets.)
-#[allow(unsafe_code)]
-pub fn get_interface_number(interface: &Interface) -> Option<u32> {
-    let idx = unsafe { if_nametoindex(interface.name.as_ptr() as *const i8) };
-
-    // From `man if_nametoindex 3`:
-    // The if_nametoindex() function maps the interface name specified in ifname to its
-    // corresponding index. If the specified interface does not exist, it returns 0.
-    if idx == 0 {
-        None
-    } else {
-        Some(idx)
     }
 }
 
