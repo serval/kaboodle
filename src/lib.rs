@@ -116,7 +116,7 @@ pub struct Kaboodle {
 impl Kaboodle {
     /// Create a new Kaboodle mesh client, broadcasting on the given port number. All clients using
     /// a given port number will discover and coordinate with each other; give your mesh a distinct
-    /// port number that is not already well-known for another purpose.
+    /// UDP port number that is not already well-known for another purpose.
     pub fn new(
         broadcast_port: u16,
         preferred_interface: Option<Interface>,
