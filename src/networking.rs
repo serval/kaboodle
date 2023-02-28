@@ -1,11 +1,26 @@
 //! This utility module contains some network interface conveniences.
 
-use if_addrs::Interface;
+use if_addrs::{IfAddr, Interface};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use tokio::net::UdpSocket;
 
 use super::errors::KaboodleError;
+
+/// Returns the best available network interface. Only non-loopback interfaces are considered, and
+/// IPv6 interfaces are preferred.
+pub fn best_available_interface() -> Result<Interface, KaboodleError> {
+    // If no interface was provided, use the first IPv6 interface we find, and if there are
+    // no IPv6 interfaces, use the first IPv4 interface.
+    let non_loopbacks = non_loopback_interfaces();
+    let first_ipv6_interface = non_loopbacks
+        .iter()
+        .find(|xs| matches!(xs.addr, IfAddr::V6(_)));
+    first_ipv6_interface
+        .or_else(|| non_loopbacks.first())
+        .cloned()
+        .ok_or_else(|| KaboodleError::NoAvailableInterfaces)
+}
 
 /// Creates a pair of sockets for receiving and sending multicast messages on the given port with
 /// the given  interface.

@@ -29,8 +29,8 @@
 // - don't respond to join announcements 100% of the time; scale down as the size of the mesh grows to avoid overwhelming newcomers
 
 use errors::KaboodleError;
-use if_addrs::{IfAddr, Interface};
-use networking::{create_broadcast_sockets, non_loopback_interfaces};
+use if_addrs::Interface;
+use networking::{best_available_interface, create_broadcast_sockets};
 use rand::{
     seq::{IteratorRandom, SliceRandom},
     Rng,
@@ -114,24 +114,21 @@ pub struct Kaboodle {
 }
 
 impl Kaboodle {
-    /// Create a new Kaboodle mesh client, broadcasting on the given port number. All clients using
-    /// a given port number will discover and coordinate with each other; give your mesh a distinct
-    /// UDP port number that is not already well-known for another purpose.
+    /// Create a new Kaboodle mesh client, broadcasting on the given port number.
     pub fn new(
+        // UDP port number to use for multicast discovery of peers. All clients using a given port
+        // number will discover and coordinate with each other; give your mesh a distinct UDP port
+        // number that is not already well-known for another purpose.
         broadcast_port: u16,
+        // Which network interface to use for communication; provide None here to have Kaboodle
+        // select one automatically.
         preferred_interface: Option<Interface>,
     ) -> Result<Kaboodle, KaboodleError> {
         // Maps from a peer's address to the known state of that peer. See PeerState for a
         // description of the individual states.
         let known_peers: HashMap<Peer, PeerState> = HashMap::new();
 
-        let Some(interface) = preferred_interface.or_else(|| {
-            // If no interface was provided, use the first IPv6 interface we find, and if there are
-            // no IPv6 interfaces, use the first IPv4 interface.
-            let non_loopbacks = non_loopback_interfaces();
-            let first_ipv6_interface = non_loopbacks.iter().find(|xs| matches!(xs.addr, IfAddr::V6(_)));
-            first_ipv6_interface.or_else(|| non_loopbacks.first()).cloned()
-        }) else {
+        let Some(interface) = preferred_interface.or_else(|| best_available_interface().ok()) else {
             return Err(KaboodleError::NoAvailableInterfaces);
         };
 
