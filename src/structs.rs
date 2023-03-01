@@ -1,7 +1,15 @@
 use serde_derive::{Deserialize, Serialize};
-use std::{fmt::Display, net::SocketAddr, time::Instant};
+use std::{collections::HashMap, fmt::Display, net::SocketAddr, time::Instant};
 
 pub type Peer = SocketAddr;
+pub type KnownPeers = HashMap<Peer, PeerInfo>;
+
+/// PeerInfo
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeerInfo {
+    // last_updated: Instant,
+    pub state: PeerState,
+}
 
 /// PeerState represents our knowledge about the status of a given peer in the network at any given
 /// moment in time.

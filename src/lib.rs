@@ -35,7 +35,7 @@ use networking::{best_available_interface, create_broadcast_sockets};
 
 use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
-use structs::RunState;
+use structs::{KnownPeers, PeerInfo, RunState};
 use structs::{Peer, PeerState};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc::Sender, Mutex};
@@ -48,7 +48,7 @@ mod structs;
 /// Data managed by a Kaboodle mesh client.
 #[derive(Debug)]
 pub struct Kaboodle {
-    known_peers: Arc<Mutex<HashMap<Peer, PeerState>>>,
+    known_peers: Arc<Mutex<KnownPeers>>,
     state: RunState,
     broadcast_port: u16,
     self_addr: Option<SocketAddr>,
@@ -69,7 +69,7 @@ impl Kaboodle {
     ) -> Result<Kaboodle, KaboodleError> {
         // Maps from a peer's address to the known state of that peer. See PeerState for a
         // description of the individual states.
-        let known_peers: HashMap<Peer, PeerState> = HashMap::new();
+        let known_peers: KnownPeers = HashMap::new();
 
         let Some(interface) = preferred_interface.or_else(|| best_available_interface().ok()) else {
             return Err(KaboodleError::NoAvailableInterfaces);
@@ -103,10 +103,12 @@ impl Kaboodle {
         // Put our socket address into the known peers list
         let self_addr = sock.local_addr().unwrap();
         self.self_addr = Some(self_addr);
-        self.known_peers
-            .lock()
-            .await
-            .insert(self_addr, PeerState::Known(Instant::now()));
+        self.known_peers.lock().await.insert(
+            self_addr,
+            PeerInfo {
+                state: PeerState::Known(Instant::now()),
+            },
+        );
 
         // Set up our broadcast communications sockets
         let (broadcast_in_sock, broadcast_out_sock, broadcast_addr) =
@@ -181,7 +183,7 @@ impl Kaboodle {
     }
 
     /// Get our current list of known peers and their current state.
-    pub async fn peer_states(&self) -> HashMap<Peer, PeerState> {
+    pub async fn peer_states(&self) -> KnownPeers {
         let known_peers = self.known_peers.lock().await;
         known_peers.clone()
     }
