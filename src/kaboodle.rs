@@ -2,7 +2,7 @@
 
 use crate::errors::KaboodleError;
 
-use crate::structs::{Peer, PeerState, SwimBroadcast, SwimMessage};
+use crate::structs::{Peer, PeerState, SwimBroadcast, SwimEnvelope, SwimMessage};
 use rand::{
     seq::{IteratorRandom, SliceRandom},
     Rng,
@@ -101,7 +101,8 @@ impl KaboodleInner {
         msg: &SwimMessage,
     ) -> Result<(), KaboodleError> {
         log::info!("SEND [{target_peer}] {msg:?}");
-        let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
+        let env = SwimEnvelope { msg: msg.clone() };
+        let out_bytes = bincode::serialize(&env).expect("Failed to serialize");
         self.sock.send_to(&out_bytes, target_peer).await?;
         Ok(())
     }
@@ -211,16 +212,16 @@ impl KaboodleInner {
     async fn handle_incoming_messages(&mut self) {
         let mut buf = [0; INCOMING_BUFFER_SIZE];
         while let Ok((_len, sender)) = self.sock.try_recv_from(&mut buf) {
-            let Ok(msg) = bincode::deserialize::<SwimMessage>(&buf) else {
+            let Ok(env) = bincode::deserialize::<SwimEnvelope>(&buf) else {
                 // This can happen if there are multiple incompatible versions of Kaboodle running
                 // at the same time -- e.g. if we've introduced a breaking change to the SwimMessage
                 // enum.
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
-            log::info!("RECV [{sender}] {msg:?}");
+            log::info!("RECV [{sender}] {:?}", env.msg);
 
-            match msg {
+            match env.msg {
                 SwimMessage::Ack {
                     peer,
                     mesh_fingerprint: their_fingerprint,
