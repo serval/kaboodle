@@ -1,5 +1,6 @@
 use std::{process::exit, thread::sleep, time::Duration};
 
+use clap::Parser;
 use dotenvy::dotenv;
 use if_addrs::{IfAddr, Interface};
 use kaboodle::{networking::non_loopback_interfaces, Kaboodle};
@@ -31,6 +32,14 @@ fn get_interface(specified_interface: &str) -> Option<Interface> {
     }
 }
 
+#[derive(Parser, Debug)]
+struct Args {
+    #[arg(long)]
+    interface: Option<String>,
+    #[arg(long, default_value = "7475")]
+    port: u16,
+}
+
 #[tokio::main]
 async fn main() {
     let did_find_dotenv = dotenv().ok().is_some();
@@ -39,25 +48,17 @@ async fn main() {
     }
     env_logger::init();
 
-    // Figure out if we have a preferred network interface to use
-    let preferred_interface = {
-        let args: Vec<_> = std::env::args_os().skip(1).collect();
-        args.get(0).map(|specified_interface| {
-            let specified_interface = specified_interface.to_string_lossy();
-            let Some(interface) = get_interface(&specified_interface) else {
-                log::error!("Failed to find an interfacing matching {specified_interface}");
-                exit(1);
-            };
-            log::info!(
-                "Using user-specified interface {} ({})",
-                interface.name,
-                interface.addr.ip()
-            );
-            interface
-        })
-    };
-
-    let mut kaboodle = Kaboodle::new(7475, preferred_interface).expect("Failed to create Kaboodle");
+    let args = Args::parse();
+    let preferred_interface = args.interface.as_ref().and_then(|str| get_interface(str));
+    if args.interface.is_some() && preferred_interface.is_none() {
+        log::error!(
+            "Failed to find an interfacing matching {}",
+            args.interface.unwrap()
+        );
+        exit(1);
+    }
+    let mut kaboodle =
+        Kaboodle::new(args.port, preferred_interface).expect("Failed to create Kaboodle");
 
     // Begin discovering peers
     if let Err(err) = kaboodle.start().await {
@@ -69,7 +70,7 @@ async fn main() {
         .self_addr()
         .expect("We should have a self address by now");
     set_terminal_title(&self_addr.to_string());
-    log::info!("I am {self_addr}");
+    log::info!("I am {self_addr}, broadcasting on {}", args.port);
 
     let mut prev_title = String::from("");
 
