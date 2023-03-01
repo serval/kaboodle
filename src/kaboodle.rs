@@ -1,10 +1,12 @@
 //! This module contains the core implementation of the SWIM gossip protocol.
 
 use crate::errors::KaboodleError;
-
+use crate::networking::create_broadcast_sockets;
 use crate::structs::{
     KnownPeers, Peer, PeerInfo, PeerState, SwimBroadcast, SwimEnvelope, SwimMessage,
 };
+use if_addrs::Interface;
+use rand::SeedableRng;
 use rand::{
     seq::{IteratorRandom, SliceRandom},
     Rng,
@@ -18,7 +20,7 @@ use std::{
 };
 use tokio::{
     net::UdpSocket,
-    sync::{mpsc::Receiver, Mutex},
+    sync::{mpsc::Receiver, mpsc::Sender, Mutex},
     time::sleep,
 };
 
@@ -69,23 +71,69 @@ pub fn generate_fingerprint(known_peers: &KnownPeers) -> u32 {
 }
 
 pub struct KaboodleInner {
-    pub rng: ChaChaRng,
-    pub sock: UdpSocket,
-    pub broadcast_addr: SocketAddr,
-    pub broadcast_out_sock: UdpSocket,
-    pub broadcast_in_sock: UdpSocket,
-    pub self_addr: SocketAddr,
-    pub known_peers: Arc<Mutex<KnownPeers>>,
+    rng: ChaChaRng,
+    sock: UdpSocket,
+    broadcast_addr: SocketAddr,
+    broadcast_out_sock: UdpSocket,
+    broadcast_in_sock: UdpSocket,
+    self_addr: SocketAddr,
+    known_peers: Arc<Mutex<KnownPeers>>,
     // Maps from a peer's address to a list of other peers who would like to be informed if we get
     // a ping ack from said peer.
-    pub curious_peers: HashMap<Peer, Vec<Peer>>,
+    curious_peers: HashMap<Peer, Vec<Peer>>,
     /// Keeps track of when we last broadcast a Join message
-    pub last_broadcast_time: Option<Instant>,
+    last_broadcast_time: Option<Instant>,
     // Whether we should stop running; takes effect in the next tick
-    pub cancellation_rx: Receiver<()>,
+    cancellation_rx: Receiver<()>,
 }
 
 impl KaboodleInner {
+    pub async fn start(
+        interface: &Interface,
+        broadcast_port: u16,
+        known_peers: Arc<Mutex<KnownPeers>>,
+    ) -> Result<(SocketAddr, Sender<()>), KaboodleError> {
+        // Set up our main communications socket
+        let sock = {
+            let ip = interface.ip();
+            UdpSocket::bind(format!("{ip}:0")).await?
+        };
+
+        // Put our socket address into the known peers list
+        let self_addr = sock.local_addr().unwrap();
+        known_peers.lock().await.insert(
+            self_addr,
+            PeerInfo {
+                state: PeerState::Known(Instant::now()),
+            },
+        );
+
+        // Set up our broadcast communications sockets
+        let (broadcast_in_sock, broadcast_out_sock, broadcast_addr) =
+            create_broadcast_sockets(interface, &broadcast_port)?;
+
+        let (cancellation_tx, cancellation_rx) = tokio::sync::mpsc::channel(1);
+
+        let mut instance = KaboodleInner {
+            sock,
+            self_addr,
+            rng: ChaChaRng::from_entropy(),
+            broadcast_addr,
+            broadcast_in_sock,
+            broadcast_out_sock,
+            known_peers,
+            curious_peers: HashMap::new(),
+            last_broadcast_time: None,
+            cancellation_rx,
+        };
+
+        tokio::spawn(async move {
+            instance.run().await;
+        });
+
+        Ok((self_addr, cancellation_tx))
+    }
+
     /// Broadcasts the given message to the entire mesh.
     async fn broadcast_msg(&self, msg: &SwimBroadcast) -> Result<(), KaboodleError> {
         let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");

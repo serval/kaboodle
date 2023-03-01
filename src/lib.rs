@@ -31,13 +31,10 @@
 use errors::KaboodleError;
 use if_addrs::Interface;
 use kaboodle::{generate_fingerprint, KaboodleInner};
-use networking::{best_available_interface, create_broadcast_sockets};
+use networking::best_available_interface;
 
-use rand_chacha::{rand_core::SeedableRng, ChaChaRng};
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Instant};
-use structs::{KnownPeers, PeerInfo, RunState};
-use structs::{Peer, PeerState};
-use tokio::net::UdpSocket;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use structs::{KnownPeers, Peer, RunState};
 use tokio::sync::{mpsc::Sender, Mutex};
 
 pub mod errors;
@@ -92,47 +89,19 @@ impl Kaboodle {
         if self.state == RunState::Running {
             return Ok(());
         }
+        assert!(self.cancellation_tx.is_none());
+        assert!(self.self_addr.is_none());
+
         self.state = RunState::Running;
+        let (self_addr, cancellation_tx) = KaboodleInner::start(
+            &self.interface,
+            self.broadcast_port,
+            self.known_peers.clone(),
+        )
+        .await?;
 
-        // Set up our main communications socket
-        let sock = {
-            let ip = self.interface.ip();
-            UdpSocket::bind(format!("{ip}:0")).await?
-        };
-
-        // Put our socket address into the known peers list
-        let self_addr = sock.local_addr().unwrap();
         self.self_addr = Some(self_addr);
-        self.known_peers.lock().await.insert(
-            self_addr,
-            PeerInfo {
-                state: PeerState::Known(Instant::now()),
-            },
-        );
-
-        // Set up our broadcast communications sockets
-        let (broadcast_in_sock, broadcast_out_sock, broadcast_addr) =
-            create_broadcast_sockets(&self.interface, &self.broadcast_port)?;
-
-        let (cancellation_tx, cancellation_rx) = tokio::sync::mpsc::channel(1);
         self.cancellation_tx = Some(cancellation_tx);
-
-        let mut inner = KaboodleInner {
-            sock,
-            self_addr,
-            rng: ChaChaRng::from_entropy(),
-            broadcast_addr,
-            broadcast_in_sock,
-            broadcast_out_sock,
-            known_peers: self.known_peers.clone(),
-            curious_peers: HashMap::new(),
-            last_broadcast_time: None,
-            cancellation_rx,
-        };
-
-        tokio::spawn(async move {
-            inner.run().await;
-        });
 
         Ok(())
     }

@@ -7,7 +7,6 @@ pub type KnownPeers = HashMap<Peer, PeerInfo>;
 /// PeerInfo
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeerInfo {
-    // last_updated: Instant,
     pub state: PeerState,
 }
 
