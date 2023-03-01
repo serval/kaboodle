@@ -80,12 +80,8 @@ async fn main() {
         let num_peers = known_peers.len();
         let fingerprint = kaboodle.fingerprint().await;
         log::info!("== Peers: {} ({:08x})", num_peers, fingerprint);
-        let num_peers_to_print = usize::max_value(); // adjust this downward to only show a subset
         for (peer, peer_info) in known_peers.iter() {
             log::info!("+ {peer}:\t{}", peer_info.state);
-        }
-        if num_peers > num_peers_to_print {
-            log::info!("+ ... and {} more", num_peers - num_peers_to_print);
         }
         let title = format!("{self_addr} {num_peers} {fingerprint}");
         if title != prev_title {
