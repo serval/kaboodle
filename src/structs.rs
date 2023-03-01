@@ -58,6 +58,14 @@ pub enum SwimBroadcast {
     Failed(Peer),
 }
 
+/// The SwimEnvelope structure wraps all messages that we will send directly to another peer. In
+/// addition to containing a unique SwimMessage, it contains general information about the sender.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SwimEnvelope {
+    /// The actual message that the peer is sending.
+    pub msg: SwimMessage,
+}
+
 /// The SwimMessage enum represents messages we will send directly to another peer.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SwimMessage {
