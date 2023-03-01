@@ -2,7 +2,9 @@
 
 use crate::errors::KaboodleError;
 
-use crate::structs::{Peer, PeerState, SwimBroadcast, SwimEnvelope, SwimMessage};
+use crate::structs::{
+    KnownPeers, Peer, PeerInfo, PeerState, SwimBroadcast, SwimEnvelope, SwimMessage,
+};
 use rand::{
     seq::{IteratorRandom, SliceRandom},
     Rng,
@@ -60,7 +62,7 @@ const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
 /// Because our only goal is to detect differences between two peer's understanding of the mesh,
 /// rather than guard against malicious tampering, CRC32 is a good fit: it's sufficiently robust for
 /// the task at hand, fast to compute, and has a very compact representation (a single u32).
-pub fn generate_fingerprint(known_peers: &HashMap<SocketAddr, PeerState>) -> u32 {
+pub fn generate_fingerprint(known_peers: &KnownPeers) -> u32 {
     let mut hosts: Vec<String> = known_peers.keys().map(|peer| peer.to_string()).collect();
     hosts.sort();
     crc32fast::hash(hosts.join(",").as_bytes())
@@ -73,7 +75,7 @@ pub struct KaboodleInner {
     pub broadcast_out_sock: UdpSocket,
     pub broadcast_in_sock: UdpSocket,
     pub self_addr: SocketAddr,
-    pub known_peers: Arc<Mutex<HashMap<Peer, PeerState>>>,
+    pub known_peers: Arc<Mutex<KnownPeers>>,
     // Maps from a peer's address to a list of other peers who would like to be informed if we get
     // a ping ack from said peer.
     pub curious_peers: HashMap<Peer, Vec<Peer>>,
@@ -163,7 +165,12 @@ impl KaboodleInner {
                     }
                     log::info!("Got a join from {peer}");
                     let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(peer, PeerState::Known(Instant::now()));
+                    known_peers.insert(
+                        peer,
+                        PeerInfo {
+                            state: PeerState::Known(Instant::now()),
+                        },
+                    );
 
                     // Figure out whether we should send the new peer our list of known peers
                     // Everyone in the mesh receives these broadcasts, so we don't want to respond
@@ -230,7 +237,12 @@ impl KaboodleInner {
                     // Insert the peer into our known_peers map as Known; if they were already in
                     // there in a WaitingFor... state, this will reset them back to being known.
                     let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(peer, PeerState::Known(Instant::now()));
+                    known_peers.insert(
+                        peer,
+                        PeerInfo {
+                            state: PeerState::Known(Instant::now()),
+                        },
+                    );
                     drop(known_peers);
 
                     if let Some(observers) = self.curious_peers.remove(&peer) {
@@ -262,9 +274,9 @@ impl KaboodleInner {
                     let mut known_peers = self.known_peers.lock().await;
                     let timestamp = Instant::now().checked_sub(MAX_PEER_SHARE_AGE).unwrap();
                     for peer in peers {
-                        known_peers
-                            .entry(peer)
-                            .or_insert(PeerState::Known(timestamp));
+                        known_peers.entry(peer).or_insert(PeerInfo {
+                            state: PeerState::Known(timestamp),
+                        });
                     }
                     drop(known_peers);
                 }
@@ -273,7 +285,12 @@ impl KaboodleInner {
                     num_peers: their_num_peers,
                 } => {
                     let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(sender, PeerState::Known(Instant::now()));
+                    known_peers.insert(
+                        sender,
+                        PeerInfo {
+                            state: PeerState::Known(Instant::now()),
+                        },
+                    );
 
                     // Send back a list of every other peer (besides ourselves and the requestor)
                     // who is in the Known state. We are specifically excluding peers in the
@@ -281,12 +298,12 @@ impl KaboodleInner {
                     // propagate echoes of down-but-not-yet-noticed-down nodes.
                     let other_peers = known_peers
                         .iter()
-                        .filter(|(other_peer, other_state)| {
+                        .filter(|(other_peer, other_info)| {
                             **other_peer != self.self_addr
                                 && **other_peer != sender
-                                && match other_state {
+                                && match other_info.state {
                                     PeerState::Known(ts) => {
-                                        Instant::now().duration_since(*ts) < MAX_PEER_SHARE_AGE
+                                        Instant::now().duration_since(ts) < MAX_PEER_SHARE_AGE
                                     }
                                     _ => false,
                                 }
@@ -325,7 +342,12 @@ impl KaboodleInner {
                     }
 
                     let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(sender, PeerState::Known(Instant::now()));
+                    known_peers.insert(
+                        sender,
+                        PeerInfo {
+                            state: PeerState::Known(Instant::now()),
+                        },
+                    );
                     drop(known_peers);
                 }
                 SwimMessage::PingRequest(peer) => {
@@ -360,8 +382,8 @@ impl KaboodleInner {
         let mut known_peers = self.known_peers.lock().await;
         let non_suspected_peers = known_peers
             .iter()
-            .filter(|(peer, peer_state)| {
-                **peer != self.self_addr && matches!(peer_state, PeerState::Known(_))
+            .filter(|(peer, peer_info)| {
+                **peer != self.self_addr && matches!(peer_info.state, PeerState::Known(_))
             })
             .map(|(peer, _)| *peer)
             .collect::<Vec<Peer>>();
@@ -370,13 +392,13 @@ impl KaboodleInner {
         // obviously inefficient. If that turns out to be a problem, we can create separate lists
         // for those peers. Until it's known to be a problem, however, the simplicity of just having
         // a single HashMap remains appealling.
-        for (peer, peer_state) in known_peers.iter() {
-            match peer_state {
+        for (peer, peer_info) in known_peers.iter() {
+            match peer_info.state {
                 PeerState::Known(_) => {
                     // Nothing required
                 }
                 PeerState::WaitingForPing(ping_sent) => {
-                    if Instant::now().duration_since(*ping_sent) < PING_TIMEOUT {
+                    if Instant::now().duration_since(ping_sent) < PING_TIMEOUT {
                         continue;
                     };
 
@@ -403,7 +425,7 @@ impl KaboodleInner {
                     }
                 }
                 PeerState::WaitingForIndirectPing(ping_sent) => {
-                    if Instant::now().duration_since(*ping_sent) < PING_TIMEOUT {
+                    if Instant::now().duration_since(ping_sent) < PING_TIMEOUT {
                         continue;
                     };
 
@@ -417,7 +439,12 @@ impl KaboodleInner {
         }
 
         for peer in indirectly_pinged_peers {
-            known_peers.insert(peer, PeerState::WaitingForIndirectPing(Instant::now()));
+            known_peers.insert(
+                peer,
+                PeerInfo {
+                    state: PeerState::WaitingForIndirectPing(Instant::now()),
+                },
+            );
         }
 
         for removed_peer in removed_peers {
@@ -443,11 +470,11 @@ impl KaboodleInner {
         let mut known_peers = self.known_peers.lock().await;
         let mut non_suspected_peers = known_peers
             .iter()
-            .filter(|(peer, peer_state)| {
-                **peer != self.self_addr && matches!(peer_state, PeerState::Known(_))
+            .filter(|(peer, peer_info)| {
+                **peer != self.self_addr && matches!(peer_info.state, PeerState::Known(_))
             })
-            .map(|(peer, peer_state)| match peer_state {
-                PeerState::Known(last_pinged) => (*peer, *last_pinged),
+            .map(|(peer, peer_info)| match peer_info.state {
+                PeerState::Known(last_pinged) => (*peer, last_pinged),
                 _ => panic!("This code should never execute"),
             })
             .collect::<Vec<(Peer, Instant)>>();
@@ -462,7 +489,12 @@ impl KaboodleInner {
 
         // - send a PING message to P and start a timeout
         //     - if P replies with an ACK, mark the peer as up
-        known_peers.insert(*target_peer, PeerState::WaitingForPing(Instant::now()));
+        known_peers.insert(
+            *target_peer,
+            PeerInfo {
+                state: PeerState::WaitingForPing(Instant::now()),
+            },
+        );
         drop(known_peers);
 
         // Comment out the following line to test indirect pinging
