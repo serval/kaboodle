@@ -518,12 +518,11 @@ impl KaboodleInner {
         let mut known_peers = self.known_peers.lock().await;
         let mut non_suspected_peers = known_peers
             .iter()
-            .filter(|(peer, peer_info)| {
-                **peer != self.self_addr && matches!(peer_info.state, PeerState::Known(_))
-            })
-            .map(|(peer, peer_info)| match peer_info.state {
-                PeerState::Known(last_pinged) => (*peer, last_pinged),
-                _ => panic!("This code should never execute"),
+            .filter_map(|(peer, peer_info)| match peer_info.state {
+                PeerState::Known(last_pinged) if *peer != self.self_addr => {
+                    Some((*peer, last_pinged))
+                }
+                _ => None,
             })
             .collect::<Vec<(Peer, Instant)>>();
 
