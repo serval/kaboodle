@@ -15,19 +15,28 @@
 //! ```rust, no_run
 //! use kaboodle::Kaboodle;
 //! async fn example() {
+//!     // UDP port number Kaboodle should use when discovering peers; every
+//!     // Kaboodle instance must be using the same port number in order to find
+//!     // each other.
+//!     let port_number = 7475;
+//!     // Which network interface to use; provide None to have Kaboodle select
+//!     // one automatically.
 //!     let preferred_interface = None;
-//!     let mut kaboodle = Kaboodle::new(7475, preferred_interface).unwrap();
+//!     // Optional byte array used to durably identify this particular instance
+//!     // of Kaboodle. Use this to give a particular machine a durable identity
+//!     // if the application you are building on top of Kaboodle requires it.
+//!     let identity = Some(b"instance1");
+//!
+//!     let mut kaboodle = Kaboodle::new(7475, preferred_interface, identity).unwrap();
 //!     kaboodle.start().await;
 //!     let peers = kaboodle.peers().await;
+//!     for (peer_address, peer_identity) in peers {
+//!        // do something interesting
+//!     }
 //! }
 //! ```
 
-// todo
-// - proper error handling
-// - add a 'props' payload for peers to share info about themsleves
-// - Infection-Style Dissemination: Instead of propagating node failure information via multicast, protocol messages are piggybacked on the ping messages used to determine node liveness. This is equivalent to gossip dissemination.
-// - don't respond to join announcements 100% of the time; scale down as the size of the mesh grows to avoid overwhelming newcomers
-
+use bytes::Bytes;
 use errors::KaboodleError;
 use if_addrs::Interface;
 use kaboodle::{generate_fingerprint, KaboodleInner};
@@ -51,18 +60,28 @@ pub struct Kaboodle {
     self_addr: Option<SocketAddr>,
     cancellation_tx: Option<Sender<()>>,
     interface: Interface,
+    identity: Bytes,
 }
 
 impl Kaboodle {
-    /// Create a new Kaboodle mesh client, broadcasting on the given port number.
+    /// Create a new Kaboodle mesh client.
+    ///
+    /// `broadcast_port` specifies the UDP port number to use for multicast discovery of peers. All
+    /// clients using a given port number will discover and coordinate with each other; give your
+    /// mesh a distinct UDP port number that is not already well-known for another purpose.
+    ///
+    /// `preferred_interface` allows you to specify the network interface to use for communication;
+    /// provide None here to have Kaboodle select one automatically.
+    ///
+    /// `identity` is a blob of bytes used to uniquely identity a given instance of Kaboodle
+    /// across multiple sessions. It isn't required, but if you need to durably identify a particular
+    /// instance over time, you can use this field. It is treated as an opaque blob internally and
+    /// can be used to store anything, but should be kept as small as possible since it is included
+    /// in most of Kabdoodle's network transmissions.
     pub fn new(
-        // UDP port number to use for multicast discovery of peers. All clients using a given port
-        // number will discover and coordinate with each other; give your mesh a distinct UDP port
-        // number that is not already well-known for another purpose.
         broadcast_port: u16,
-        // Which network interface to use for communication; provide None here to have Kaboodle
-        // select one automatically.
         preferred_interface: Option<Interface>,
+        identity: Vec<u8>,
     ) -> Result<Kaboodle, KaboodleError> {
         // Maps from a peer's address to the known state of that peer. See PeerState for a
         // description of the individual states.
@@ -77,6 +96,7 @@ impl Kaboodle {
             state: RunState::NotStarted,
             interface,
             broadcast_port,
+            identity: Bytes::from(identity),
 
             // These will get set whenever `start` is called:
             self_addr: None,
@@ -97,6 +117,7 @@ impl Kaboodle {
             &self.interface,
             self.broadcast_port,
             self.known_peers.clone(),
+            self.identity.clone(),
         )
         .await?;
 
@@ -146,9 +167,12 @@ impl Kaboodle {
     }
 
     /// Get our current list of known peers.
-    pub async fn peers(&self) -> Vec<Peer> {
+    pub async fn peers(&self) -> HashMap<Peer, Bytes> {
         let known_peers = self.known_peers.lock().await;
-        known_peers.keys().copied().collect()
+        known_peers
+            .iter()
+            .map(|(peer, peer_state)| (peer.to_owned(), peer_state.identity.to_owned()))
+            .collect()
     }
 
     /// Get our current list of known peers and their current state.

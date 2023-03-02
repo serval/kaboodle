@@ -35,6 +35,8 @@ fn get_interface(specified_interface: &str) -> Option<Interface> {
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(long)]
+    identity: Option<String>,
+    #[arg(long)]
     interface: Option<String>,
     #[arg(long, default_value = "7475")]
     port: u16,
@@ -57,8 +59,13 @@ async fn main() {
         );
         exit(1);
     }
+    let identity = args
+        .identity
+        .as_ref()
+        .map(|identity| identity.as_bytes().to_owned())
+        .unwrap_or_default();
     let mut kaboodle =
-        Kaboodle::new(args.port, preferred_interface).expect("Failed to create Kaboodle");
+        Kaboodle::new(args.port, preferred_interface, identity).expect("Failed to create Kaboodle");
 
     // Begin discovering peers
     if let Err(err) = kaboodle.start().await {
@@ -70,7 +77,12 @@ async fn main() {
         .self_addr()
         .expect("We should have a self address by now");
     set_terminal_title(&self_addr.to_string());
-    log::info!("I am {self_addr}, broadcasting on {}", args.port);
+    log::info!(
+        "Identity: {}",
+        args.identity.unwrap_or_else(|| String::from("(none)")),
+    );
+    log::info!("Address: {self_addr}");
+    log::info!("Port: {}", args.port);
 
     let mut prev_title = String::from("");
 
@@ -82,7 +94,10 @@ async fn main() {
         let fingerprint = kaboodle.fingerprint().await;
         log::info!("== Peers: {} ({:08x})", num_peers, fingerprint);
         for (peer, peer_info) in known_peers.iter() {
-            log::info!("+ {peer}:\t{}", peer_info.state);
+            let identity = String::from_utf8(peer_info.identity.to_vec())
+                .map(|id| format!(" ({id})"))
+                .unwrap_or_default();
+            log::info!("+ {peer}{identity}:\t{}", peer_info.state);
         }
         let title = format!("{self_addr} {num_peers} {fingerprint}");
         if title != prev_title {

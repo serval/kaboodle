@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use serde_derive::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display, net::SocketAddr, time::Instant};
 
@@ -7,6 +8,7 @@ pub type KnownPeers = HashMap<Peer, PeerInfo>;
 /// PeerInfo
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeerInfo {
+    pub identity: Bytes,
     pub state: PeerState,
 }
 
@@ -60,7 +62,7 @@ pub enum RunState {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SwimBroadcast {
     /// Announces our existence to the mesh; Peer represents this instance of Kaboodle
-    Join(Peer),
+    Join { addr: Peer, identity: Bytes },
     /// Announces that we believe the given Peer (not us) is down
     Failed(Peer),
 }
@@ -69,6 +71,8 @@ pub enum SwimBroadcast {
 /// addition to containing a unique SwimMessage, it contains general information about the sender.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SwimEnvelope {
+    /// Consumer-provided identity to uniquely identify this Kaboodle instance across sessions.
+    pub identity: Bytes,
     /// The actual message that the peer is sending.
     pub msg: SwimMessage,
 }
@@ -76,14 +80,23 @@ pub struct SwimEnvelope {
 /// The SwimMessage enum represents messages we will send directly to another peer.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SwimMessage {
+    /// Sent to verify whether a peer is still participating in the met; should be replied to with
+    /// an Ack.
     Ping,
+    /// Sent request that that we ping the given peer on behalf of the sender, who is having trouble
+    /// communicating with them directly and is trying to figure out whether the peer is down or if
+    /// the network is just unreliable.
     PingRequest(Peer),
+    /// Sent in response to a Ping or PingRequest.
     Ack {
         peer: Peer,
         mesh_fingerprint: u32,
         num_peers: u32,
     },
-    KnownPeers(Vec<Peer>),
+    /// Sent in response to a SwimBroadcast::Join or KnownPeersRequest message; this contains a map
+    /// of all of the peers that we are confident in the state of.
+    KnownPeers(HashMap<Peer, Bytes>),
+    /// Sent to request a known peers map.
     KnownPeersRequest {
         mesh_fingerprint: u32,
         num_peers: u32,
