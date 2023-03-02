@@ -79,12 +79,12 @@ pub struct KaboodleInner {
     broadcast_in_sock: UdpSocket,
     self_addr: SocketAddr,
     known_peers: Arc<Mutex<KnownPeers>>,
-    // Maps from a peer's address to a list of other peers who would like to be informed if we get
-    // a ping ack from said peer.
+    /// Maps from a peer's address to a list of other peers who would like to be informed if we get
+    /// a ping ack from said peer.
     curious_peers: HashMap<Peer, Vec<Peer>>,
     /// Keeps track of when we last broadcast a Join message
     last_broadcast_time: Option<Instant>,
-    // Whether we should stop running; takes effect in the next tick
+    /// Whether we should stop running; takes effect in the next tick
     cancellation_rx: Receiver<()>,
     /// Small payload to uniquely identity this instance to its peers; used to allow consumers of
     /// Kaboodle to keep track of a durable instance identity across sessions.
@@ -362,7 +362,7 @@ impl KaboodleInner {
 
                     // Send back a list of every other peer (besides ourselves and the requestor)
                     // who is in the Known state and who we have heard from since
-                    // MAX_PEER_SHARE_AGE. The state and age check makes us less likely to
+                    // MAX_PEER_SHARE_AGE. The state and age checks make us less likely to
                     // accidentally propagate echoes of down-but-not-yet-noticed-down nodes.
                     let other_peers = known_peers
                         .iter()

@@ -1,3 +1,5 @@
+//! Error types used internally to communicate details about errors specific to our implementation
+//! details.
 #![allow(missing_docs)]
 
 use thiserror::Error;

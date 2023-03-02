@@ -10,8 +10,6 @@
 //! some details. It can be used to discover other peers on the LAN without any central
 //! coordination.
 //!
-//! Kaboodle needs to be instantiated with a broadcast port number and an optional preferred network
-//! interface for it to use
 //! ```rust, no_run
 //! use kaboodle::Kaboodle;
 //! async fn example() {
