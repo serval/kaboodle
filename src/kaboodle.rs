@@ -19,11 +19,15 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::{
     net::UdpSocket,
     sync::{mpsc::Receiver, mpsc::Sender, Mutex},
     time::sleep,
 };
+
+pub type PayloadRequestResult = Result<Bytes, KaboodleError>;
+type PayloadChannelType = (SocketAddr, PayloadRequestResult);
 
 /// The minimum amount of time to wait between rounds of communication with the mesh; we keep track
 /// of how long it's been since the start of the current tick and wait however long is required to
@@ -86,9 +90,13 @@ pub struct KaboodleInner {
     last_broadcast_time: Option<Instant>,
     /// Whether we should stop running; takes effect in the next tick
     cancellation_rx: Receiver<()>,
+    req_payload_rx: UnboundedReceiver<SocketAddr>,
+    recv_payload_tx: UnboundedSender<PayloadChannelType>,
     /// Small payload to uniquely identity this instance to its peers; used to allow consumers of
     /// Kaboodle to keep track of a durable instance identity across sessions.
     identity: Bytes,
+    // Arbitrary blob of data that can be requested by another peer on-demand.
+    extended_payload: Bytes,
 }
 
 impl KaboodleInner {
@@ -97,7 +105,16 @@ impl KaboodleInner {
         broadcast_port: u16,
         known_peers: Arc<Mutex<KnownPeers>>,
         identity: Bytes,
-    ) -> Result<(SocketAddr, Sender<()>), KaboodleError> {
+        extended_payload: Bytes,
+    ) -> Result<
+        (
+            SocketAddr,
+            Sender<()>,
+            UnboundedSender<SocketAddr>,
+            UnboundedReceiver<PayloadChannelType>,
+        ),
+        KaboodleError,
+    > {
         // Set up our main communications socket
         let sock = {
             let ip = interface.ip();
@@ -119,6 +136,9 @@ impl KaboodleInner {
             create_broadcast_sockets(interface, &broadcast_port)?;
 
         let (cancellation_tx, cancellation_rx) = tokio::sync::mpsc::channel(1);
+        let (req_payload_tx, req_payload_rx) = tokio::sync::mpsc::unbounded_channel::<SocketAddr>();
+        let (recv_payload_tx, recv_payload_rx) =
+            tokio::sync::mpsc::unbounded_channel::<PayloadChannelType>();
 
         let mut instance = KaboodleInner {
             sock,
@@ -132,13 +152,16 @@ impl KaboodleInner {
             last_broadcast_time: None,
             cancellation_rx,
             identity,
+            extended_payload,
+            req_payload_rx,
+            recv_payload_tx,
         };
 
         tokio::spawn(async move {
             instance.run().await;
         });
 
-        Ok((self_addr, cancellation_tx))
+        Ok((self_addr, cancellation_tx, req_payload_tx, recv_payload_rx))
     }
 
     /// Broadcasts the given message to the entire mesh.
@@ -219,6 +242,16 @@ impl KaboodleInner {
                     let mut known_peers = self.known_peers.lock().await;
                     known_peers.remove(&peer);
                     drop(known_peers);
+
+                    // Send a FailedPeerPayloadUnavailable error for this peer; we don't track
+                    // whether an outstanding request for this peer's payload actually existed, but
+                    // the other end of the channel can figure that out.
+                    // This may be more gracefully implemented in the future by having a dedicated
+                    // "peer_failed" channel for this use case, leaving the payload logic entirely
+                    // over in the main Kaboodle library.
+                    let _ = self
+                        .recv_payload_tx
+                        .send((peer, Err(KaboodleError::FailedPeerPayloadUnavailable)));
                 }
                 SwimBroadcast::Join {
                     addr: peer,
@@ -337,6 +370,29 @@ impl KaboodleInner {
 
                     self.maybe_sync_known_peers(peer, their_fingerprint, their_num_peers)
                         .await;
+                }
+                SwimMessage::PayloadRequest => {
+                    // println!("dying on purpose");
+                    // loop {}
+                    if let Err(err) = self
+                        .send_msg(
+                            &sender,
+                            &SwimMessage::Payload(self.extended_payload.clone()),
+                        )
+                        .await
+                    {
+                        log::warn!("Failed to send payload to {sender}: {err:?}");
+                    }
+                }
+                SwimMessage::Payload(payload) => {
+                    log::info!("RECV a payload {:?}", self.recv_payload_tx.is_closed());
+                    if !self.recv_payload_tx.is_closed() {
+                        log::info!("transmitting to recv");
+                        if let Err(err) = self.recv_payload_tx.send((sender, Ok(payload))) {
+                            log::warn!("Failed to send payload over channel; err={err:?}");
+                        }
+                        log::info!("did transmit");
+                    }
                 }
                 SwimMessage::KnownPeers(peers) => {
                     let mut known_peers = self.known_peers.lock().await;
@@ -572,6 +628,16 @@ impl KaboodleInner {
         }
     }
 
+    async fn handle_payload_requests(&mut self) {
+        while let Ok(peer) = self.req_payload_rx.try_recv() {
+            let Ok(_) = self.send_msg(&peer, &SwimMessage::PayloadRequest).await else {
+                // We weren't able to request the payload, so just return an error
+                let _ = self.recv_payload_tx.send((peer, Err(KaboodleError::FailedToRequestPayload)));
+                return;
+            };
+        }
+    }
+
     /// Compares our perspective on the state of the mesh to that of one of our peers, and possibly
     /// sends them a KnownPeersRequest if we believe they have more/better information than we do.
     async fn maybe_sync_known_peers(
@@ -624,6 +690,7 @@ impl KaboodleInner {
         self.handle_incoming_messages().await;
         self.handle_suspected_peers().await;
         self.ping_random_peer().await;
+        self.handle_payload_requests().await;
     }
 
     pub async fn run(&mut self) {

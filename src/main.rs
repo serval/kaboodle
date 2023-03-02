@@ -34,10 +34,19 @@ fn get_interface(specified_interface: &str) -> Option<Interface> {
 
 #[derive(Parser, Debug)]
 struct Args {
+    // identity is an arbitrary Bytes payload; for the purposes of this demo app, we'll just accept
+    // a string on the command line.
     #[arg(long)]
     identity: Option<String>,
+    // payload is an arbitrary Bytes payload; for the purposes of this demo app, we'll just accept
+    // a string on the command line.
+    #[arg(long)]
+    payload: Option<String>,
+    // An interface name or IP address, or the string 'ipv4' or 'ipv6' to pick the first
+    // non-loopback interface of that kind.
     #[arg(long)]
     interface: Option<String>,
+    // UDP port number to use for broadcast messages.
     #[arg(long, default_value = "7475")]
     port: u16,
 }
@@ -66,14 +75,28 @@ async fn main() {
     // identity for each node. Alternatively, you could use something intrinsic to the machine, like
     // its host name or the MAC address of a network interface. For the purposes of this demo app,
     // we're just accepting it as a command line parameter.
+    // This value is included in nearly all of Kaboodle's network traffic, so try to keep it as
+    // compact as possible (on the order of < 100 bytes, ideally).
     let identity = args
         .identity
         .as_ref()
         .map(|str| str.to_owned())
         .unwrap_or_default();
 
-    let mut kaboodle =
-        Kaboodle::new(args.port, preferred_interface, identity).expect("Failed to create Kaboodle");
+    // Kaboodle nodes have a payload associated with them. Much like identity, the payload is an
+    // opaque blob of bytes whose meaning entirely depends on the consumer of this library. Unlike
+    // identity, which is shared with all nodes in the mesh automatically, the payload is only sent
+    // in response to a direct request. This means that it can be used to share larger amounts of
+    // data. That being said, it is still transmitted over UDP, so keeping it under a few hundred
+    // bytes of data would be wise.
+    let payload = args
+        .payload
+        .as_ref()
+        .map(|str| str.to_owned())
+        .unwrap_or_default();
+
+    let mut kaboodle = Kaboodle::new(args.port, preferred_interface, identity, payload)
+        .expect("Failed to create Kaboodle");
 
     // Begin discovering peers
     if let Err(err) = kaboodle.start().await {
@@ -93,6 +116,7 @@ async fn main() {
     log::info!("Port: {}", args.port);
 
     let mut prev_title = String::from("");
+    let mut did_request_payload = false;
 
     loop {
         // Dump our list of peers out
@@ -111,6 +135,19 @@ async fn main() {
         if title != prev_title {
             set_terminal_title(&title);
             prev_title = title;
+        }
+
+        if num_peers > 1 && !did_request_payload {
+            if let Some(target_peer) = known_peers
+                .iter()
+                .find(|(peer, _)| *peer != self_addr)
+                .map(|(peer, _)| *peer)
+            {
+                did_request_payload = true;
+                log::info!("Requesting payload from the first peer we discovered {target_peer:?}");
+                let payload_res = kaboodle.peer_payload(target_peer).await;
+                log::info!("Got payload result from peer {target_peer:?}: {payload_res:?}");
+            }
         }
 
         sleep(Duration::from_millis(1000));

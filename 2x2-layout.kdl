@@ -3,21 +3,21 @@ layout {
         pane split_direction="vertical" {
             pane {
                 command "cargo"
-                args "run" "--" "--identity" "top-left"
+                args "run" "--" "--identity" "top-left" "--payload" "top-left-payload"
             }
             pane {
                 command "cargo"
-                args "run" "--" "--identity" "top-right"
+                args "run" "--" "--identity" "top-right" "--payload" "top-right-payload"
             }
         }
         pane split_direction="vertical" {
             pane {
                 command "cargo"
-                args "run" "--" "--identity" "bottom-left"
+                args "run" "--" "--identity" "bottom-left" "--payload" "bottom-left-payload"
             }
             pane {
                 command "cargo"
-                args "run" "--" "--identity" "bottom-right"
+                args "run" "--" "--identity" "bottom-right" "--payload" "bottom-right-payload"
             }
         }
     }

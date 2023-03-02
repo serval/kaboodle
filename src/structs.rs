@@ -101,4 +101,8 @@ pub enum SwimMessage {
         mesh_fingerprint: u32,
         num_peers: u32,
     },
+    // Sent to request a peer's payload.
+    PayloadRequest,
+    // Sent in response to a PayloadRequest.
+    Payload(Bytes),
 }
