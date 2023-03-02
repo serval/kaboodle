@@ -276,23 +276,23 @@ impl KaboodleInner {
             };
             log::info!("RECV [{sender}] {:?}", env.msg);
 
+            // Insert the peer into our known_peers map as Known; if they were already in
+            // there in a WaitingFor... state, this will reset them back to being known.
+            let mut known_peers = self.known_peers.lock().await;
+            known_peers.insert(
+                sender,
+                PeerInfo {
+                    state: PeerState::Known(Instant::now()),
+                },
+            );
+            drop(known_peers);
+
             match env.msg {
                 SwimMessage::Ack {
                     peer,
                     mesh_fingerprint: their_fingerprint,
                     num_peers: their_num_peers,
                 } => {
-                    // Insert the peer into our known_peers map as Known; if they were already in
-                    // there in a WaitingFor... state, this will reset them back to being known.
-                    let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(
-                        peer,
-                        PeerInfo {
-                            state: PeerState::Known(Instant::now()),
-                        },
-                    );
-                    drop(known_peers);
-
                     if let Some(observers) = self.curious_peers.remove(&peer) {
                         // Some of our peers were waiting to hear back about this ping
                         for observer in observers {
@@ -320,10 +320,15 @@ impl KaboodleInner {
                 }
                 SwimMessage::KnownPeers(peers) => {
                     let mut known_peers = self.known_peers.lock().await;
-                    let timestamp = Instant::now().checked_sub(MAX_PEER_SHARE_AGE).unwrap();
+                    // Insert all of the new-to-us peers with a timestamp that is intentionally too
+                    // old for us to share them in any incoming KnownPeersRequests that we may
+                    // receive; this guarantees that now-vanished peers don't get propagated around
+                    // via KnownPeersRequest messages indefinitely.
+                    let too_old_to_share_timestamp =
+                        Instant::now().checked_sub(MAX_PEER_SHARE_AGE).unwrap();
                     for peer in peers {
                         known_peers.entry(peer).or_insert(PeerInfo {
-                            state: PeerState::Known(timestamp),
+                            state: PeerState::Known(too_old_to_share_timestamp),
                         });
                     }
                     drop(known_peers);
@@ -332,18 +337,12 @@ impl KaboodleInner {
                     mesh_fingerprint: their_fingerprint,
                     num_peers: their_num_peers,
                 } => {
-                    let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(
-                        sender,
-                        PeerInfo {
-                            state: PeerState::Known(Instant::now()),
-                        },
-                    );
+                    let known_peers = self.known_peers.lock().await;
 
                     // Send back a list of every other peer (besides ourselves and the requestor)
-                    // who is in the Known state. We are specifically excluding peers in the
-                    // WaitingFor... states because otherwise, we are more likely to accidentally
-                    // propagate echoes of down-but-not-yet-noticed-down nodes.
+                    // who is in the Known state and who we have heard from since
+                    // MAX_PEER_SHARE_AGE. The state and age check makes us less likely to
+                    // accidentally propagate echoes of down-but-not-yet-noticed-down nodes.
                     let other_peers = known_peers
                         .iter()
                         .filter(|(other_peer, other_info)| {
@@ -388,15 +387,6 @@ impl KaboodleInner {
                     {
                         log::warn!("Failed to reply to known ping request: {err:?}");
                     }
-
-                    let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(
-                        sender,
-                        PeerInfo {
-                            state: PeerState::Known(Instant::now()),
-                        },
-                    );
-                    drop(known_peers);
                 }
                 SwimMessage::PingRequest(peer) => {
                     // Make a note of the fact that `sender` wants to hear whenever we get an ack
@@ -536,12 +526,12 @@ impl KaboodleInner {
 
         // - send a PING message to P and start a timeout
         //     - if P replies with an ACK, mark the peer as up
-        known_peers.insert(
-            *target_peer,
-            PeerInfo {
-                state: PeerState::WaitingForPing(Instant::now()),
-            },
-        );
+        if let Some(peer_info) = known_peers.get_mut(target_peer) {
+            peer_info.state = PeerState::WaitingForPing(Instant::now());
+        } else {
+            log::warn!("Failed to update randomly-selected peer state {target_peer}; this is a programming error");
+            return;
+        }
         drop(known_peers);
 
         // Comment out the following line to test indirect pinging
