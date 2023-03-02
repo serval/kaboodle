@@ -5,6 +5,7 @@ use crate::networking::create_broadcast_sockets;
 use crate::structs::{
     KnownPeers, Peer, PeerInfo, PeerState, SwimBroadcast, SwimEnvelope, SwimMessage,
 };
+use bytes::Bytes;
 use if_addrs::Interface;
 use rand::SeedableRng;
 use rand::{
@@ -85,6 +86,9 @@ pub struct KaboodleInner {
     last_broadcast_time: Option<Instant>,
     // Whether we should stop running; takes effect in the next tick
     cancellation_rx: Receiver<()>,
+    /// Small payload to uniquely identity this instance to its peers; used to allow consumers of
+    /// Kaboodle to keep track of a durable instance identity across sessions.
+    identity: Bytes,
 }
 
 impl KaboodleInner {
@@ -92,6 +96,7 @@ impl KaboodleInner {
         interface: &Interface,
         broadcast_port: u16,
         known_peers: Arc<Mutex<KnownPeers>>,
+        identity: Bytes,
     ) -> Result<(SocketAddr, Sender<()>), KaboodleError> {
         // Set up our main communications socket
         let sock = {
@@ -104,6 +109,7 @@ impl KaboodleInner {
         known_peers.lock().await.insert(
             self_addr,
             PeerInfo {
+                identity: identity.clone(),
                 state: PeerState::Known(Instant::now()),
             },
         );
@@ -125,6 +131,7 @@ impl KaboodleInner {
             curious_peers: HashMap::new(),
             last_broadcast_time: None,
             cancellation_rx,
+            identity,
         };
 
         tokio::spawn(async move {
@@ -151,7 +158,10 @@ impl KaboodleInner {
         msg: &SwimMessage,
     ) -> Result<(), KaboodleError> {
         log::info!("SEND [{target_peer}] {msg:?}");
-        let env = SwimEnvelope { msg: msg.clone() };
+        let env = SwimEnvelope {
+            identity: self.identity.clone(),
+            msg: msg.clone(),
+        };
         let out_bytes = bincode::serialize(&env).expect("Failed to serialize");
         self.sock.send_to(&out_bytes, target_peer).await?;
         Ok(())
@@ -172,7 +182,10 @@ impl KaboodleInner {
         // Broadcast our existence
         self.last_broadcast_time = Some(now);
         if let Err(err) = self
-            .broadcast_msg(&SwimBroadcast::Join(self.self_addr))
+            .broadcast_msg(&SwimBroadcast::Join {
+                addr: self.self_addr,
+                identity: self.identity.clone(),
+            })
             .await
         {
             log::warn!("Failed to broadcast our join message: {err:?}");
@@ -207,7 +220,10 @@ impl KaboodleInner {
                     known_peers.remove(&peer);
                     drop(known_peers);
                 }
-                SwimBroadcast::Join(peer) => {
+                SwimBroadcast::Join {
+                    addr: peer,
+                    identity,
+                } => {
                     if peer == self.self_addr {
                         continue;
                     }
@@ -216,6 +232,7 @@ impl KaboodleInner {
                     known_peers.insert(
                         peer,
                         PeerInfo {
+                            identity,
                             state: PeerState::Known(Instant::now()),
                         },
                     );
@@ -241,9 +258,11 @@ impl KaboodleInner {
                     // Send a list of known peers to the newcomer
                     // todo: we might need to only send a subset in order to keep packet size down;
                     // that is a problem for another day.
-                    let other_peers: Vec<Peer> = known_peers
-                        .keys()
-                        .map(|other_peer| other_peer.to_owned())
+                    let other_peers: HashMap<Peer, Bytes> = known_peers
+                        .iter()
+                        .map(|(other_peer, other_peer_info)| {
+                            (other_peer.to_owned(), other_peer_info.identity.to_owned())
+                        })
                         .collect();
                     drop(known_peers);
 
@@ -274,7 +293,7 @@ impl KaboodleInner {
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
-            log::info!("RECV [{sender}] {:?}", env.msg);
+            log::info!("RECV [{} ({})] {:?}", sender, env.identity.len(), env.msg);
 
             // Insert the peer into our known_peers map as Known; if they were already in
             // there in a WaitingFor... state, this will reset them back to being known.
@@ -282,6 +301,7 @@ impl KaboodleInner {
             known_peers.insert(
                 sender,
                 PeerInfo {
+                    identity: env.identity,
                     state: PeerState::Known(Instant::now()),
                 },
             );
@@ -326,8 +346,9 @@ impl KaboodleInner {
                     // via KnownPeersRequest messages indefinitely.
                     let too_old_to_share_timestamp =
                         Instant::now().checked_sub(MAX_PEER_SHARE_AGE).unwrap();
-                    for peer in peers {
+                    for (peer, identity) in peers {
                         known_peers.entry(peer).or_insert(PeerInfo {
+                            identity,
                             state: PeerState::Known(too_old_to_share_timestamp),
                         });
                     }
@@ -345,17 +366,22 @@ impl KaboodleInner {
                     // accidentally propagate echoes of down-but-not-yet-noticed-down nodes.
                     let other_peers = known_peers
                         .iter()
-                        .filter(|(other_peer, other_info)| {
-                            **other_peer != self.self_addr
-                                && **other_peer != sender
-                                && match other_info.state {
-                                    PeerState::Known(ts) => {
-                                        Instant::now().duration_since(ts) < MAX_PEER_SHARE_AGE
-                                    }
-                                    _ => false,
+                        .filter_map(
+                            |(other_peer, other_peer_info)| match other_peer_info.state {
+                                PeerState::Known(last_pinged)
+                                    if *other_peer != self.self_addr
+                                        && *other_peer != sender
+                                        && Instant::now().duration_since(last_pinged)
+                                            < MAX_PEER_SHARE_AGE =>
+                                {
+                                    Some((
+                                        other_peer.to_owned(),
+                                        other_peer_info.identity.to_owned(),
+                                    ))
                                 }
-                        })
-                        .map(|(other_peer, _)| other_peer.to_owned())
+                                _ => None,
+                            },
+                        )
                         .collect();
                     drop(known_peers);
                     if let Err(err) = self
@@ -477,12 +503,11 @@ impl KaboodleInner {
         }
 
         for peer in indirectly_pinged_peers {
-            known_peers.insert(
-                peer,
-                PeerInfo {
-                    state: PeerState::WaitingForIndirectPing(Instant::now()),
-                },
-            );
+            if let Some(peer_info) = known_peers.get_mut(&peer) {
+                peer_info.state = PeerState::WaitingForPing(Instant::now());
+            } else {
+                log::warn!("Failed to update indirectly pinged peer state {peer}; this is a programming error");
+            }
         }
 
         for removed_peer in removed_peers {
