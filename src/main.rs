@@ -59,11 +59,19 @@ async fn main() {
         );
         exit(1);
     }
+
+    // Kaboodle treats identity as an opaque blob of bytes; it has no meaning of its own. It is
+    // provided as a way for you to give Kaboodle peers durable identities over time; for example,
+    // you could generate a UUID, write it to disk for use between sessions, and use that as the
+    // identity for each node. Alternatively, you could use something intrinsic to the machine, like
+    // its host name or the MAC address of a network interface. For the purposes of this demo app,
+    // we're just accepting it as a command line parameter.
     let identity = args
         .identity
         .as_ref()
-        .map(|identity| identity.as_bytes().to_owned())
+        .map(|str| str.to_owned())
         .unwrap_or_default();
+
     let mut kaboodle =
         Kaboodle::new(args.port, preferred_interface, identity).expect("Failed to create Kaboodle");
 
