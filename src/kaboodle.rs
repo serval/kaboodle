@@ -561,7 +561,14 @@ impl KaboodleInner {
 
         // Comment out the following line to test indirect pinging
         if let Err(err) = self.send_msg(target_peer, &SwimMessage::Ping).await {
-            log::warn!("Failed to send ping to randomly-selected peer {target_peer}: {err:?}");
+            // TODO: we could request an indirect ping from other peers, or remove target_peer and
+            // broadcast SwimBroadcast::Failed to the mesh, but for now, let's just remove them from
+            // our known_peers list and let the problem sort itself out naturally. If the peer is
+            // genuinely gone, every other peer in the mesh will eventually figure that out on their
+            // own.
+            log::warn!("Failed to send ping to randomly-selected peer {target_peer}: {err:?}; assuming they're down immediately");
+            let mut known_peers = self.known_peers.lock().await;
+            known_peers.remove(target_peer);
         }
     }
 
