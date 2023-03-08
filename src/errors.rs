@@ -6,14 +6,13 @@ use std::net::SocketAddr;
 
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Clone, Debug, Error)]
 pub enum KaboodleError {
-    /// A conversion for std:io:Error
-    #[error("std::io::Error: {0}")]
-    IoError(#[from] std::io::Error),
+    #[error("IoError: {0}")]
+    IoError(String),
 
-    #[error("tokio::sync::mpsc::error::SendError: {0}")]
-    SendError(#[from] tokio::sync::mpsc::error::SendError<SocketAddr>),
+    #[error("SocketAddrChannelSendError: {0}")]
+    SocketAddrChannelSendError(SocketAddr),
 
     #[error("No available interfaces meet our requirements")]
     NoAvailableInterfaces,
@@ -35,26 +34,19 @@ pub enum KaboodleError {
 
     #[error("Communication channel closed; result unavailable")]
     ChannelClosed,
-
-    #[error("The original wrapped error was lost when this error was cloned")]
-    UncloneableError(String),
 }
 
-// We can't derive Clone for KaboodleError because some of the errors we marshall #[from] don't
-// implement Clone themselves, hence this little bit of gross logic:
-impl Clone for KaboodleError {
-    fn clone(&self) -> Self {
-        match self {
-            Self::IoError(err) => KaboodleError::UncloneableError(err.to_string()),
-            Self::SendError(err) => tokio::sync::mpsc::error::SendError::<SocketAddr>(err.0).into(),
-            Self::NoAvailableInterfaces => Self::NoAvailableInterfaces,
-            Self::UnableToFindInterfaceNumber => Self::UnableToFindInterfaceNumber,
-            Self::StoppingFailed(reason) => Self::StoppingFailed(reason.to_owned()),
-            Self::PayloadsUnavailableNotRunning => Self::PayloadsUnavailableNotRunning,
-            Self::FailedToRequestPayload => Self::FailedToRequestPayload,
-            Self::FailedPeerPayloadUnavailable => Self::FailedPeerPayloadUnavailable,
-            Self::ChannelClosed => Self::ChannelClosed,
-            Self::UncloneableError(msg) => Self::UncloneableError(msg.to_owned()),
-        }
+// We can't just use #[from] to derive these because the errors in question don't implement Clone,
+// but we do want KaboodleError to implement Clone. Instead, we manually marshall it into a clonable
+// custom error variant.
+impl From<std::io::Error> for KaboodleError {
+    fn from(value: std::io::Error) -> Self {
+        KaboodleError::IoError(value.to_string())
+    }
+}
+
+impl From<tokio::sync::mpsc::error::SendError<SocketAddr>> for KaboodleError {
+    fn from(addr: tokio::sync::mpsc::error::SendError<SocketAddr>) -> Self {
+        KaboodleError::SocketAddrChannelSendError(addr.0)
     }
 }
