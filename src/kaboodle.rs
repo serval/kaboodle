@@ -504,7 +504,7 @@ impl KaboodleInner {
 
         for peer in indirectly_pinged_peers {
             if let Some(peer_info) = known_peers.get_mut(&peer) {
-                peer_info.state = PeerState::WaitingForPing(Instant::now());
+                peer_info.state = PeerState::WaitingForIndirectPing(Instant::now());
             } else {
                 log::warn!("Failed to update indirectly pinged peer state {peer}; this is a programming error");
             }
