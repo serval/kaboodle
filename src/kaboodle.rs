@@ -285,7 +285,18 @@ impl KaboodleInner {
 
     async fn handle_incoming_messages(&mut self) {
         let mut buf = [0; INCOMING_BUFFER_SIZE];
-        while let Ok((_len, sender)) = self.sock.try_recv_from(&mut buf) {
+        println!("DEBUG handle_incoming_messages before loop");
+        loop {
+            let (_len, sender) = match self.sock.try_recv_from(&mut buf) {
+                Ok((len, sender)) => {
+                    println!("DEBUG try_recv_from ok: {len} bytes from {sender}");
+                    (len, sender)
+                }
+                Err(err) => {
+                    eprintln!("DEBUG try_recv_from error: {err:?}");
+                    break;
+                }
+            };
             let Ok(env) = bincode::deserialize::<SwimEnvelope>(&buf) else {
                 // This can happen if there are multiple incompatible versions of Kaboodle running
                 // at the same time -- e.g. if we've introduced a breaking change to the SwimMessage
@@ -429,6 +440,7 @@ impl KaboodleInner {
                 }
             }
         }
+        println!("DEBUG handle_incoming_messages after loop");
     }
 
     async fn handle_suspected_peers(&mut self) {
@@ -621,6 +633,7 @@ impl KaboodleInner {
         // series of individual steps happening over and over.
         self.maybe_broadcast_join().await;
         self.handle_incoming_broadcasts().await;
+        println!("DEBUG tick: handle_incoming_messages");
         self.handle_incoming_messages().await;
         self.handle_suspected_peers().await;
         self.ping_random_peer().await;
