@@ -228,65 +228,77 @@ impl KaboodleInner {
                     known_peers.remove(&peer);
                     drop(known_peers);
                 }
-                SwimBroadcast::Join {
-                    addr: peer,
-                    identity,
-                } => {
-                    if peer == self.self_addr {
+                SwimBroadcast::Join { addr, identity } => {
+                    if addr == self.self_addr {
                         continue;
                     }
-                    log::info!("Got a join from {peer}");
-                    let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(
-                        peer,
-                        PeerInfo {
-                            identity,
+                    log::info!("Got a join from {addr}");
+
+                    let is_new_peer = {
+                        let peer_info = PeerInfo {
+                            identity: identity.clone(),
                             state: PeerState::Known(Instant::now()),
-                        },
-                    );
-
-                    // Figure out whether we should send the new peer our list of known peers
-                    // Everyone in the mesh receives these broadcasts, so we don't want to respond
-                    // 100% of the time -- otherwise, new peers in large meshes would receive an
-                    // avalanche of redundant peer lists from every other peer when they first show
-                    // up. The exact formula may get tweaked over time, but the intention is to
-                    // ramp down from a 100% chance if we don't know of any other peers yet to a
-                    // minimum of 1% once we have some sufficient number.
-                    // See Section 3.2 in the SWIM paper for more thoughts on this logic.
-                    let num_other_peers = known_peers.len() - 2; // minus ourselves and the newcomer
-                    let percent_chance_of_sending_peers =
-                        std::cmp::max(1, 100 - i64::pow(num_other_peers as i64, 2)) as f64 / 100.0;
-                    let should_send_peers = self.rng.gen_bool(percent_chance_of_sending_peers);
-                    if !should_send_peers {
-                        log::info!("Not sending known peers to new peer in the hopes that someone else will");
-                        drop(known_peers);
-                        continue;
+                        };
+                        let mut known_peers = self.known_peers.lock().await;
+                        known_peers.insert(addr, peer_info) == None
+                    };
+                    if is_new_peer {
+                        self.handle_new_peer_discovered(addr, identity).await;
                     }
 
-                    // Send a list of known peers to the newcomer
-                    // todo: we might need to only send a subset in order to keep packet size down;
-                    // that is a problem for another day.
-                    let other_peers: HashMap<Peer, Bytes> = known_peers
-                        .iter()
-                        .map(|(other_peer, other_peer_info)| {
-                            (other_peer.to_owned(), other_peer_info.identity.to_owned())
-                        })
-                        .collect();
-                    drop(known_peers);
-
-                    if !other_peers.is_empty() {
-                        if let Err(err) = self
-                            .send_msg(&peer, &SwimMessage::KnownPeers(other_peers))
-                            .await
-                        {
-                            // Log a warning so we know something went wrong, but there's not actually
-                            // anything to be done in this case -- so long as at least one other
-                            // member of the mesh succesfully sends a response to the newcomer, we
-                            // should be okay.
-                            log::warn!("Failed to send known peers to newly joined peer: {err:?}");
-                        }
-                    }
+                    // todo: maybe only send this if `is_new_peer`? (this would be a behaviour
+                    // change, so I am not doing it right now.)
+                    self.maybe_send_known_peers_to_peer(addr).await;
                 }
+            }
+        }
+    }
+
+    async fn handle_new_peer_discovered(&mut self, addr: SocketAddr, identity: Bytes) {
+        // todo: implement me
+    }
+
+    async fn maybe_send_known_peers_to_peer(&mut self, addr: SocketAddr) {
+        let known_peers = self.known_peers.lock().await;
+
+        // Figure out whether we should send the new peer our list of known peers
+        // Everyone in the mesh receives these broadcasts, so we don't want to respond
+        // 100% of the time -- otherwise, new peers in large meshes would receive an
+        // avalanche of redundant peer lists from every other peer when they first show
+        // up. The exact formula may get tweaked over time, but the intention is to
+        // ramp down from a 100% chance if we don't know of any other peers yet to a
+        // minimum of 1% once we have some sufficient number.
+        // See Section 3.2 in the SWIM paper for more thoughts on this logic.
+        let num_other_peers = known_peers.len() - 2; // minus ourselves and the newcomer
+        let percent_chance_of_sending_peers =
+            std::cmp::max(1, 100 - i64::pow(num_other_peers as i64, 2)) as f64 / 100.0;
+        let should_send_peers = self.rng.gen_bool(percent_chance_of_sending_peers);
+        if !should_send_peers {
+            log::info!("Not sending known peers to new peer in the hopes that someone else will");
+            return;
+        }
+
+        // Send a list of known peers to the newcomer
+        // todo: we might need to only send a subset in order to keep packet size down;
+        // that is a problem for another day.
+        let other_peers: HashMap<Peer, Bytes> = known_peers
+            .iter()
+            .map(|(other_peer, other_peer_info)| {
+                (other_peer.to_owned(), other_peer_info.identity.to_owned())
+            })
+            .collect();
+        drop(known_peers);
+
+        if !other_peers.is_empty() {
+            if let Err(err) = self
+                .send_msg(&addr, &SwimMessage::KnownPeers(other_peers))
+                .await
+            {
+                // Log a warning so we know something went wrong, but there's not actually
+                // anything to be done in this case -- so long as at least one other
+                // member of the mesh succesfully sends a response to the newcomer, we
+                // should be okay.
+                log::warn!("Failed to send known peers to newly joined peer: {err:?}");
             }
         }
     }
@@ -305,15 +317,17 @@ impl KaboodleInner {
 
             // Insert the peer into our known_peers map as Known; if they were already in
             // there in a WaitingFor... state, this will reset them back to being known.
-            let mut known_peers = self.known_peers.lock().await;
-            known_peers.insert(
-                sender,
-                PeerInfo {
-                    identity: env.identity,
+            let is_new_peer = {
+                let mut known_peers = self.known_peers.lock().await;
+                let peer_info = PeerInfo {
+                    identity: env.identity.clone(),
                     state: PeerState::Known(Instant::now()),
-                },
-            );
-            drop(known_peers);
+                };
+                known_peers.insert(sender, peer_info) == None
+            };
+            if is_new_peer {
+                self.handle_new_peer_discovered(sender, env.identity).await;
+            }
 
             match env.msg {
                 SwimMessage::Ack {
@@ -352,15 +366,27 @@ impl KaboodleInner {
                     // old for us to share them in any incoming KnownPeersRequests that we may
                     // receive; this guarantees that now-vanished peers don't get propagated around
                     // via KnownPeersRequest messages indefinitely.
+                    let peers_to_add: HashMap<_, _> = peers
+                        .into_iter()
+                        .filter(|(peer, _)| !known_peers.contains_key(peer))
+                        .collect();
+
                     let too_old_to_share_timestamp =
                         Instant::now().checked_sub(MAX_PEER_SHARE_AGE).unwrap();
-                    for (peer, identity) in peers {
-                        known_peers.entry(peer).or_insert(PeerInfo {
-                            identity,
-                            state: PeerState::Known(too_old_to_share_timestamp),
-                        });
+                    for (peer, identity) in peers_to_add.iter() {
+                        known_peers.insert(
+                            peer.clone(),
+                            PeerInfo {
+                                identity: identity.clone(),
+                                state: PeerState::Known(too_old_to_share_timestamp),
+                            },
+                        );
                     }
                     drop(known_peers);
+
+                    for (peer, identity) in peers_to_add.into_iter() {
+                        self.handle_new_peer_discovered(peer, identity).await;
+                    }
                 }
                 SwimMessage::KnownPeersRequest {
                     mesh_fingerprint: their_fingerprint,
