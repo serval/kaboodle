@@ -76,12 +76,6 @@ impl Kaboodle {
     /// instance over time, you can use this field. It is treated as an opaque blob internally and
     /// can be used to store anything, but should be kept as small as possible since it is included
     /// in most of Kabdoodle's network transmissions.
-    ///
-    /// `payload` is a blob of bytes used for whatever purpose you like. Payloads are fetched from
-    /// peers on-demand, so there is no overhead for using them, although they are still transmitted
-    /// via UDP, so they shouldn't be excessively large. Payloads are appropriate for sharing small
-    /// key/value stores of data about peers, e.g. port numbers for communicating with another
-    /// service running on that node.
     pub fn new(
         broadcast_port: u16,
         preferred_interface: Option<Interface>,
