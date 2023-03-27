@@ -71,6 +71,11 @@ pub fn generate_fingerprint(known_peers: &KnownPeers) -> u32 {
     crc32fast::hash(hosts.join(",").as_bytes())
 }
 
+pub struct StartResult {
+    pub self_addr: SocketAddr,
+    pub cancellation_tx: Sender<()>,
+}
+
 pub struct KaboodleInner {
     rng: ChaChaRng,
     sock: UdpSocket,
@@ -97,7 +102,7 @@ impl KaboodleInner {
         broadcast_port: u16,
         known_peers: Arc<Mutex<KnownPeers>>,
         identity: Bytes,
-    ) -> Result<(SocketAddr, Sender<()>), KaboodleError> {
+    ) -> Result<StartResult, KaboodleError> {
         // Set up our main communications socket
         let sock = {
             let ip = interface.ip();
@@ -138,7 +143,10 @@ impl KaboodleInner {
             instance.run().await;
         });
 
-        Ok((self_addr, cancellation_tx))
+        Ok(StartResult {
+            self_addr,
+            cancellation_tx,
+        })
     }
 
     /// Broadcasts the given message to the entire mesh.
