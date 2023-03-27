@@ -111,7 +111,7 @@ impl Kaboodle {
         assert!(self.self_addr.is_none());
 
         self.state = RunState::Running;
-        let (self_addr, cancellation_tx) = KaboodleInner::start(
+        let mut result = KaboodleInner::start(
             &self.interface,
             self.broadcast_port,
             self.known_peers.clone(),
@@ -119,8 +119,8 @@ impl Kaboodle {
         )
         .await?;
 
-        self.self_addr = Some(self_addr);
-        self.cancellation_tx = Some(cancellation_tx);
+        self.self_addr = Some(result.self_addr);
+        self.cancellation_tx = Some(result.cancellation_tx);
 
         Ok(())
     }
