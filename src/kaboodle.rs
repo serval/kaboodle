@@ -66,7 +66,10 @@ const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
 /// rather than guard against malicious tampering, CRC32 is a good fit: it's sufficiently robust for
 /// the task at hand, fast to compute, and has a very compact representation (a single u32).
 pub fn generate_fingerprint(known_peers: &KnownPeers) -> Fingerprint {
-    let mut hosts: Vec<String> = known_peers.keys().map(|peer| peer.to_string()).collect();
+    let mut hosts: Vec<String> = known_peers
+        .iter()
+        .map(|(peer, peer_info)| format!("{}/{}", peer, crc32fast::hash(&peer_info.identity)))
+        .collect();
     hosts.sort();
     crc32fast::hash(hosts.join(",").as_bytes())
 }
