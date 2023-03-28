@@ -94,6 +94,26 @@ async fn main() {
 
     let mut prev_title = String::from("");
 
+    // Write out a message any time a new peer is discovered
+    if let Ok(mut discovery_rx) = kaboodle.discover_peers() {
+        tokio::spawn(async move {
+            loop {
+                if let Some(new_peer) = discovery_rx.recv().await {
+                    log::info!("New peer discovered! {new_peer:?}");
+                }
+            }
+        });
+    }
+
+    // Write out a message the first time a new peer is discovered
+    if let Ok(discovery_rx) = kaboodle.discover_next_peer() {
+        tokio::spawn(async move {
+            if let Ok(new_peer) = discovery_rx.await {
+                log::info!("First peer discovered! {new_peer:?}");
+            }
+        });
+    }
+
     loop {
         // Dump our list of peers out
         let known_peers = kaboodle.peer_states().await;

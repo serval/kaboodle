@@ -52,6 +52,8 @@ mod kaboodle;
 pub mod networking;
 mod structs;
 
+type DiscoverySenders = Vec<UnboundedSender<(Peer, Bytes)>>;
+
 /// Data managed by a Kaboodle mesh client.
 #[derive(Debug)]
 pub struct Kaboodle {
@@ -60,7 +62,7 @@ pub struct Kaboodle {
     broadcast_port: u16,
     self_addr: Option<SocketAddr>,
     cancellation_tx: Option<Sender<()>>,
-    discovery_tx: Arc<Mutex<Vec<UnboundedSender<(Peer, Bytes)>>>>,
+    discovery_tx: Arc<Mutex<DiscoverySenders>>,
     interface: Interface,
     identity: Bytes,
 }

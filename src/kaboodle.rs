@@ -246,7 +246,7 @@ impl KaboodleInner {
                             state: PeerState::Known(Instant::now()),
                         };
                         let mut known_peers = self.known_peers.lock().await;
-                        known_peers.insert(addr, peer_info) == None
+                        known_peers.insert(addr, peer_info).is_none()
                     };
                     if is_new_peer {
                         self.handle_new_peer_discovered(addr, identity).await;
@@ -331,7 +331,7 @@ impl KaboodleInner {
                     identity: env.identity.clone(),
                     state: PeerState::Known(Instant::now()),
                 };
-                known_peers.insert(sender, peer_info) == None
+                known_peers.insert(sender, peer_info).is_none()
             };
             if is_new_peer {
                 self.handle_new_peer_discovered(sender, env.identity).await;
@@ -383,7 +383,7 @@ impl KaboodleInner {
                         Instant::now().checked_sub(MAX_PEER_SHARE_AGE).unwrap();
                     for (peer, identity) in peers_to_add.iter() {
                         known_peers.insert(
-                            peer.clone(),
+                            *peer,
                             PeerInfo {
                                 identity: identity.clone(),
                                 state: PeerState::Known(too_old_to_share_timestamp),
