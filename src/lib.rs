@@ -42,7 +42,10 @@ use networking::best_available_interface;
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use structs::{KnownPeers, Peer, RunState};
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::{
+    mpsc::{Sender, UnboundedReceiver, UnboundedSender},
+    oneshot, Mutex,
+};
 
 pub mod errors;
 mod kaboodle;
@@ -57,6 +60,7 @@ pub struct Kaboodle {
     broadcast_port: u16,
     self_addr: Option<SocketAddr>,
     cancellation_tx: Option<Sender<()>>,
+    discovery_tx: Arc<Mutex<Vec<UnboundedSender<(Peer, Bytes)>>>>,
     interface: Interface,
     identity: Bytes,
 }
@@ -95,6 +99,7 @@ impl Kaboodle {
             interface,
             broadcast_port,
             identity: identity.into(),
+            discovery_tx: Arc::new(Mutex::new(vec![])),
 
             // These will get set whenever `start` is called:
             self_addr: None,
@@ -121,6 +126,44 @@ impl Kaboodle {
 
         self.self_addr = Some(result.self_addr);
         self.cancellation_tx = Some(result.cancellation_tx);
+
+        // Spin up a background task to listen to KaboodleInner's notifications of new peer
+        // discoveries. We have to drain `discovery_rx` continuously, or else the KaboodleInner task
+        // will be blocked next time it discovers a peer (since it's a channel with a capacity of
+        // 1).
+        let discovery_tx = self.discovery_tx.clone();
+        tokio::spawn(async move {
+            while let Some((addr, identity)) = result.discovery_rx.recv().await {
+                let mut discovery_tx = discovery_tx.lock().await;
+
+                // Any time Kaboodle::discover_peer is called, it creates a new channel and adds the
+                // sender to our `discovery_tx` map.
+                // First, remove any channels that have been closed:
+                let indices_to_remove: Vec<usize> = discovery_tx
+                    .iter()
+                    // .rev()
+                    .enumerate()
+                    .filter_map(|(idx, tx)| if tx.is_closed() { Some(idx) } else { None })
+                    .collect();
+                for idx in indices_to_remove {
+                    discovery_tx.remove(idx);
+                }
+
+                log::debug!(
+                    "New peer discovered; addr={addr}; identity={identity:?}; listeners={}",
+                    discovery_tx.len()
+                );
+
+                // Then, notify remaining channels:
+                for tx in discovery_tx.iter() {
+                    if let Err(err) = tx.send((addr, identity.clone())) {
+                        log::warn!(
+                            "Failed to notify listener of newly discovered peer; err={err:?}"
+                        );
+                    }
+                }
+            }
+        });
 
         Ok(())
     }
@@ -150,6 +193,55 @@ impl Kaboodle {
         }
 
         Ok(())
+    }
+
+    /// Returns a channel receiver that will be invoked every time a new peer is discovered.
+    pub fn discover_peers(
+        &mut self,
+    ) -> Result<UnboundedReceiver<(SocketAddr, Bytes)>, KaboodleError> {
+        if self.cancellation_tx.is_none() {
+            return Err(KaboodleError::NotRunning);
+        }
+
+        // Create a channel and add it to our list of discovery channel (ha) transmitters. Whenever
+        // Kaboodle is notified of a new peer by KaboodleInner, Kaboodle will send that peer out to
+        // all of the transmitters.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let discovery_tx = self.discovery_tx.clone();
+        tokio::spawn(async move {
+            let mut locked = discovery_tx.lock().await;
+            locked.push(tx);
+        });
+
+        Ok(rx)
+    }
+
+    /// Returns a one-shot channel receiver that will be invoked the next time a new peer is
+    /// discovered; use this if you just want to discover the very next peer.
+    pub fn discover_next_peer(
+        &mut self,
+    ) -> Result<oneshot::Receiver<(SocketAddr, Bytes)>, KaboodleError> {
+        let (tx, rx) = oneshot::channel::<(SocketAddr, Bytes)>();
+        let mut discovery_rx = self.discover_peers()?;
+
+        tokio::spawn(async move {
+            if let Some(peer) = discovery_rx.recv().await {
+                if !tx.is_closed() {
+                    if let Err(err) = tx.send(peer) {
+                        log::warn!(
+                            "Failed to notify listener of newly discovered peer; err={err:?}"
+                        );
+                    }
+                }
+            }
+
+            // `discovery_rx` will be dropped here, which will cause the tx end of that channel to
+            // be closed. The next time a peer is discovered, that code will notice that this
+            // channel is closed, and it will remove it from the list of channels to notify.
+        });
+
+        Ok(rx)
     }
 
     /// Calculate an CRC-32 hash of the current list of peers. The list is sorted before hashing, so

@@ -74,6 +74,7 @@ pub fn generate_fingerprint(known_peers: &KnownPeers) -> u32 {
 pub struct StartResult {
     pub self_addr: SocketAddr,
     pub cancellation_tx: Sender<()>,
+    pub discovery_rx: Receiver<(Peer, Bytes)>,
 }
 
 pub struct KaboodleInner {
@@ -94,6 +95,8 @@ pub struct KaboodleInner {
     /// Small payload to uniquely identity this instance to its peers; used to allow consumers of
     /// Kaboodle to keep track of a durable instance identity across sessions.
     identity: Bytes,
+    /// Channel for informing the outer Kaboodle instance of newly discovered peers
+    discovery_tx: Sender<(Peer, Bytes)>,
 }
 
 impl KaboodleInner {
@@ -124,6 +127,7 @@ impl KaboodleInner {
             create_broadcast_sockets(interface, &broadcast_port)?;
 
         let (cancellation_tx, cancellation_rx) = tokio::sync::mpsc::channel(1);
+        let (discovery_tx, discovery_rx) = tokio::sync::mpsc::channel::<(Peer, Bytes)>(1);
 
         let mut instance = KaboodleInner {
             sock,
@@ -136,6 +140,7 @@ impl KaboodleInner {
             curious_peers: HashMap::new(),
             last_broadcast_time: None,
             cancellation_rx,
+            discovery_tx,
             identity,
         };
 
@@ -146,6 +151,7 @@ impl KaboodleInner {
         Ok(StartResult {
             self_addr,
             cancellation_tx,
+            discovery_rx,
         })
     }
 
@@ -255,7 +261,9 @@ impl KaboodleInner {
     }
 
     async fn handle_new_peer_discovered(&mut self, addr: SocketAddr, identity: Bytes) {
-        // todo: implement me
+        if let Err(err) = self.discovery_tx.send((addr, identity)).await {
+            log::warn!("Failed to notify listeners of newly discovered peer; err={err:?}");
+        }
     }
 
     async fn maybe_send_known_peers_to_peer(&mut self, addr: SocketAddr) {
