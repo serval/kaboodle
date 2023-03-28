@@ -143,7 +143,6 @@ impl Kaboodle {
                 // First, remove any channels that have been closed:
                 let indices_to_remove: Vec<usize> = discovery_tx
                     .iter()
-                    // .rev()
                     .enumerate()
                     .filter_map(|(idx, tx)| if tx.is_closed() { Some(idx) } else { None })
                     .collect();
