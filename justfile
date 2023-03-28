@@ -53,3 +53,22 @@ help:
 # Check for unused dependencies.
 check-unused:
     cargo +nightly udeps --all
+
+set positional-arguments
+tailscale *args:
+    #!/usr/bin/env bash
+    set -e
+    if ! hash tailscale 2>/dev/null; then
+        echo This command requires the Tailscale CLI tool to be installed:
+        echo https://tailscale.com/kb/1080/cli/
+        exit 1
+    fi
+
+    ADDR=$(tailscale ip --6 2>/dev/null)
+    if [ "${ADDR}" == "" ]; then
+        echo Tailscale does not have an IPv6 address; aborting.
+        exit 1
+    fi
+
+    cargo run -- --interface "${ADDR}" "$@"
+
