@@ -1,4 +1,4 @@
-use std::{process::exit, thread::sleep, time::Duration};
+use std::{io::Write, process::exit, thread::sleep, time::Duration};
 
 use clap::Parser;
 use dotenvy::dotenv;
@@ -7,10 +7,6 @@ use kaboodle::{networking::non_loopback_interfaces, Kaboodle};
 
 pub mod errors;
 pub mod networking;
-
-fn set_terminal_title(title: &str) {
-    println!("\x1B]0;{title}\x07");
-}
 
 fn get_interface(specified_interface: &str) -> Option<Interface> {
     match specified_interface {
@@ -46,7 +42,7 @@ struct Args {
 async fn main() {
     let did_find_dotenv = dotenv().ok().is_some();
     if cfg!(debug_assertions) && !did_find_dotenv {
-        log::info!("Debug-only warning: no .env file found to configure logging; all logging will be disabled. Add RUST_LOG=info to .env to see logging.");
+        println!("Debug-only warning: no .env file found to configure logging; all logging will be disabled. Add RUST_LOG=info to .env to see logging.");
     }
     env_logger::init();
 
@@ -84,77 +80,81 @@ async fn main() {
     let self_addr = &kaboodle
         .self_addr()
         .expect("We should have a self address by now");
-    set_terminal_title(&self_addr.to_string());
-    log::info!(
-        "Identity: {}",
+    println!(
+        "Identity: {}\x1B]0;{self_addr}\x07",
         args.identity.unwrap_or_else(|| String::from("(none)")),
     );
-    log::info!("Address: {self_addr}");
-    log::info!("Port: {}", args.port);
+    println!("Address: {self_addr}");
+    println!("Port: {}", args.port);
 
-    let mut prev_title = String::from("");
+    let mut discovery_rx = kaboodle.discover_peers().unwrap();
+    let mut departure_rx = kaboodle.discover_departures().unwrap();
+    let mut fingerprint_rx = kaboodle.discover_fingerprint_changes().unwrap();
 
-    // Write out a message any time a new peer is discovered
-    if let Ok(mut discovery_rx) = kaboodle.discover_peers() {
-        tokio::spawn(async move {
-            loop {
-                if let Some(new_peer) = discovery_rx.recv().await {
-                    log::info!("New peer discovered! {new_peer:?}");
-                }
-            }
-        });
-    }
-
-    // Write out a message the very first time a new peer is discovered
-    if let Ok(discovery_rx) = kaboodle.discover_next_peer() {
-        tokio::spawn(async move {
-            if let Ok(new_peer) = discovery_rx.await {
-                log::info!("First peer discovered! {new_peer:?}");
-            }
-        });
-    }
-
-    // Write out a message any time a peer leaves
-    if let Ok(mut departure_rx) = kaboodle.discover_departures() {
-        tokio::spawn(async move {
-            loop {
-                if let Some(new_peer) = departure_rx.recv().await {
-                    log::info!("Peer left: {new_peer:?}");
-                }
-            }
-        });
-    }
-
-    // Write out a message any time a peer leaves
-    if let Ok(mut fingerprint_rx) = kaboodle.discover_fingerprint_changes() {
-        tokio::spawn(async move {
-            loop {
-                if let Some(fingerprint) = fingerprint_rx.recv().await {
-                    log::info!("Fingerprint is now {fingerprint}");
-                }
-            }
-        });
-    }
+    const SPINNER_FRAMES: &str = "⣾⣽⣻⢿⡿⣟⣯⣷";
+    let mut spinner_frame: usize = 0;
 
     loop {
-        // Dump our list of peers out
-        let known_peers = kaboodle.peer_states().await;
+        let mut did_emit_output = false;
 
-        let num_peers = known_peers.len();
-        let fingerprint = kaboodle.fingerprint().await;
-        log::info!("== Peers: {} ({:08x})", num_peers, fingerprint);
-        for (peer, peer_info) in known_peers.iter() {
-            let identity = String::from_utf8(peer_info.identity.to_vec())
+        // Check for new peers
+        if let Ok((addr, identity_bytes)) = discovery_rx.try_recv() {
+            let identity = String::from_utf8(identity_bytes.to_vec())
                 .map(|id| format!(" ({id})"))
                 .unwrap_or_default();
-            log::info!("+ {peer}{identity}:\t{}", peer_info.state);
-        }
-        let title = format!("{self_addr} {num_peers} {fingerprint}");
-        if title != prev_title {
-            set_terminal_title(&title);
-            prev_title = title;
+            if !did_emit_output {
+                print!("\x0D\x0D"); // delete the last frame of the spinner
+                did_emit_output = true;
+            }
+            println!("New peer: {addr}{identity}");
         }
 
-        sleep(Duration::from_millis(1000));
+        // Check for departed peers
+        if let Ok(departed_peer) = departure_rx.try_recv() {
+            if !did_emit_output {
+                print!("\x0D\x0D"); // delete the last frame of the spinner
+                did_emit_output = true;
+            }
+            println!("Peer left: {departed_peer}");
+        }
+
+        // Check for fingerprint changes; we want to drain `fingerprint_rx` because multiple changes
+        // may have happened since we last checked, but we only care about the current value.
+        let mut new_fingerprint = None;
+        while let Ok(fingerprint) = fingerprint_rx.try_recv() {
+            new_fingerprint = Some(fingerprint);
+        }
+        if let Some(fingerprint) = new_fingerprint {
+            if !did_emit_output {
+                print!("\x0D\x0D"); // delete the last frame of the spinner
+            }
+
+            let known_peers = kaboodle.peer_states().await;
+            let num_peers = known_peers.len();
+            let title = format!("\x1B]0;{self_addr} {num_peers} {fingerprint:08x}\x07");
+            println!(
+                "Mesh fingerprint is now {fingerprint:08x} with {num_peers} peers in mesh:{title}"
+            );
+            for (peer, peer_info) in known_peers.iter() {
+                let identity = String::from_utf8(peer_info.identity.to_vec())
+                    .map(|id| format!(" ({id})"))
+                    .unwrap_or_default();
+                println!("+ {peer}{identity}");
+            }
+        }
+
+        // Kaboodle only does work every second, which means there's no value in trying to
+        // receive data from the various channels more than once a second. However, we'd like to
+        // have a nice, smooth spinner, so run ten frames of animation back-to-back:
+        let num_frames = SPINNER_FRAMES.chars().count();
+        for _ in 0..10 {
+            print!(
+                "\x0D\x0D{} ",
+                SPINNER_FRAMES.chars().nth(spinner_frame).unwrap()
+            );
+            std::io::stdout().flush().unwrap();
+            spinner_frame = (spinner_frame + 1) % num_frames;
+            sleep(Duration::from_millis(100));
+        }
     }
 }
