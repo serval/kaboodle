@@ -152,7 +152,7 @@ impl KaboodleInner {
     /// Broadcasts the given message to the entire mesh.
     async fn broadcast_msg(&self, msg: &SwimBroadcast) -> Result<(), KaboodleError> {
         let out_bytes = bincode::serialize(&msg).expect("Failed to serialize");
-        log::info!("BROADCAST {msg:?} to {:?}", self.broadcast_addr);
+        log::debug!("BROADCAST {msg:?} to {:?}", self.broadcast_addr);
         self.broadcast_out_sock
             .send_to(&out_bytes, self.broadcast_addr)
             .await?;
@@ -165,7 +165,7 @@ impl KaboodleInner {
         target_peer: &SocketAddr,
         msg: &SwimMessage,
     ) -> Result<(), KaboodleError> {
-        log::info!("SEND [{target_peer}] {msg:?}");
+        log::debug!("SEND [{target_peer}] {msg:?}");
         let env = SwimEnvelope {
             identity: self.identity.clone(),
             msg: msg.clone(),
@@ -213,7 +213,7 @@ impl KaboodleInner {
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
-            log::info!("RECV-BROADCAST [{sender}] {msg:?}");
+            log::debug!("RECV-BROADCAST [{sender}] {msg:?}");
             match msg {
                 SwimBroadcast::Failed(peer) => {
                     if peer == self.self_addr {
@@ -223,7 +223,7 @@ impl KaboodleInner {
                     };
 
                     // Note: unclear whether we should unilaterally trust this but ok
-                    log::info!("Removing peer that we were told has failed {peer}");
+                    log::debug!("Removing peer that we were told has failed {peer}");
                     let mut known_peers = self.known_peers.lock().await;
                     known_peers.remove(&peer);
                     drop(known_peers);
@@ -232,7 +232,7 @@ impl KaboodleInner {
                     if addr == self.self_addr {
                         continue;
                     }
-                    log::info!("Got a join from {addr}");
+                    log::debug!("Got a join from {addr}");
 
                     let peer_info = PeerInfo {
                         identity: identity.clone(),
@@ -266,7 +266,7 @@ impl KaboodleInner {
             std::cmp::max(1, 100 - i64::pow(num_other_peers as i64, 2)) as f64 / 100.0;
         let should_send_peers = self.rng.gen_bool(percent_chance_of_sending_peers);
         if !should_send_peers {
-            log::info!("Not sending known peers to new peer in the hopes that someone else will");
+            log::debug!("Not sending known peers to new peer in the hopes that someone else will");
             return;
         }
 
@@ -305,7 +305,7 @@ impl KaboodleInner {
                 log::warn!("Failed to deserialize bytes: {buf:?}");
                 continue;
             };
-            log::info!("RECV [{} ({})] {:?}", sender, env.identity.len(), env.msg);
+            log::debug!("RECV [{} ({})] {:?}", sender, env.identity.len(), env.msg);
 
             // Insert the peer into our known_peers map as Known; if they were already in
             // there in a WaitingFor... state, this will reset them back to being known.
@@ -489,7 +489,7 @@ impl KaboodleInner {
                         .collect();
 
                     if indirect_ping_peers.is_empty() {
-                        log::info!("No indirect peers to ask to ping {peer}; removing them now");
+                        log::debug!("No indirect peers to ask to ping {peer}; removing them now");
                         // There's no one we can ask for an indirect ping, so give up on this peer
                         // right away I guess.
                         removed_peers.push(*peer);
@@ -512,7 +512,7 @@ impl KaboodleInner {
                     };
 
                     // Give up on 'em
-                    log::info!(
+                    log::debug!(
                         "Suspected peer {peer} timed out and is presumed down; removing them"
                     );
                     removed_peers.push(*peer);
@@ -531,7 +531,7 @@ impl KaboodleInner {
         }
 
         for removed_peer in removed_peers {
-            log::info!("Removing peer {removed_peer}");
+            log::debug!("Removing peer {removed_peer}");
             known_peers.remove(&removed_peer);
             self.curious_peers.remove_entry(&removed_peer);
 
@@ -613,7 +613,7 @@ impl KaboodleInner {
 
         if our_num_peers > their_num_peers {
             // We know more about them than they know about us; they'll send us a KnownPeersRequest
-            log::info!("maybe_sync_known_peers: expect to receive a KnownPeersRequest");
+            log::debug!("maybe_sync_known_peers: expect to receive a KnownPeersRequest");
             return;
         }
 
