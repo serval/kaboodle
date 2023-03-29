@@ -74,7 +74,6 @@ pub fn generate_fingerprint(known_peers: &KnownPeers) -> u32 {
 pub struct StartResult {
     pub self_addr: SocketAddr,
     pub cancellation_tx: Sender<()>,
-    pub discovery_rx: Receiver<(Peer, Bytes)>,
 }
 
 pub struct KaboodleInner {
@@ -95,8 +94,6 @@ pub struct KaboodleInner {
     /// Small payload to uniquely identity this instance to its peers; used to allow consumers of
     /// Kaboodle to keep track of a durable instance identity across sessions.
     identity: Bytes,
-    /// Channel for informing the outer Kaboodle instance of newly discovered peers
-    discovery_tx: Sender<(Peer, Bytes)>,
 }
 
 impl KaboodleInner {
@@ -127,7 +124,6 @@ impl KaboodleInner {
             create_broadcast_sockets(interface, &broadcast_port)?;
 
         let (cancellation_tx, cancellation_rx) = tokio::sync::mpsc::channel(1);
-        let (discovery_tx, discovery_rx) = tokio::sync::mpsc::channel::<(Peer, Bytes)>(1);
 
         let mut instance = KaboodleInner {
             sock,
@@ -140,7 +136,6 @@ impl KaboodleInner {
             curious_peers: HashMap::new(),
             last_broadcast_time: None,
             cancellation_rx,
-            discovery_tx,
             identity,
         };
 
@@ -151,7 +146,6 @@ impl KaboodleInner {
         Ok(StartResult {
             self_addr,
             cancellation_tx,
-            discovery_rx,
         })
     }
 
@@ -240,29 +234,19 @@ impl KaboodleInner {
                     }
                     log::info!("Got a join from {addr}");
 
-                    let is_new_peer = {
-                        let peer_info = PeerInfo {
-                            identity: identity.clone(),
-                            state: PeerState::Known(Instant::now()),
-                        };
-                        let mut known_peers = self.known_peers.lock().await;
-                        known_peers.insert(addr, peer_info).is_none()
+                    let peer_info = PeerInfo {
+                        identity: identity.clone(),
+                        state: PeerState::Known(Instant::now()),
                     };
-                    if is_new_peer {
-                        self.handle_new_peer_discovered(addr, identity).await;
-                    }
+                    let mut known_peers = self.known_peers.lock().await;
+                    known_peers.insert(addr, peer_info);
+                    drop(known_peers);
 
                     // todo: maybe only send this if `is_new_peer`? (this would be a behaviour
                     // change, so I am not doing it right now.)
                     self.maybe_send_known_peers_to_peer(addr).await;
                 }
             }
-        }
-    }
-
-    async fn handle_new_peer_discovered(&mut self, addr: SocketAddr, identity: Bytes) {
-        if let Err(err) = self.discovery_tx.send((addr, identity)).await {
-            log::warn!("Failed to notify listeners of newly discovered peer; err={err:?}");
         }
     }
 
@@ -325,17 +309,13 @@ impl KaboodleInner {
 
             // Insert the peer into our known_peers map as Known; if they were already in
             // there in a WaitingFor... state, this will reset them back to being known.
-            let is_new_peer = {
-                let mut known_peers = self.known_peers.lock().await;
-                let peer_info = PeerInfo {
-                    identity: env.identity.clone(),
-                    state: PeerState::Known(Instant::now()),
-                };
-                known_peers.insert(sender, peer_info).is_none()
+            let mut known_peers = self.known_peers.lock().await;
+            let peer_info = PeerInfo {
+                identity: env.identity.clone(),
+                state: PeerState::Known(Instant::now()),
             };
-            if is_new_peer {
-                self.handle_new_peer_discovered(sender, env.identity).await;
-            }
+            known_peers.insert(sender, peer_info);
+            drop(known_peers);
 
             match env.msg {
                 SwimMessage::Ack {
@@ -381,9 +361,9 @@ impl KaboodleInner {
 
                     let too_old_to_share_timestamp =
                         Instant::now().checked_sub(MAX_PEER_SHARE_AGE).unwrap();
-                    for (peer, identity) in peers_to_add.iter() {
+                    for (peer, identity) in peers_to_add {
                         known_peers.insert(
-                            *peer,
+                            peer,
                             PeerInfo {
                                 identity: identity.clone(),
                                 state: PeerState::Known(too_old_to_share_timestamp),
@@ -391,10 +371,6 @@ impl KaboodleInner {
                         );
                     }
                     drop(known_peers);
-
-                    for (peer, identity) in peers_to_add.into_iter() {
-                        self.handle_new_peer_discovered(peer, identity).await;
-                    }
                 }
                 SwimMessage::KnownPeersRequest {
                     mesh_fingerprint: their_fingerprint,
@@ -545,9 +521,11 @@ impl KaboodleInner {
         }
 
         for peer in indirectly_pinged_peers {
-            if let Some(peer_info) = known_peers.get_mut(&peer) {
+            let did_update = known_peers.update(&peer, |mut peer_info| {
                 peer_info.state = PeerState::WaitingForIndirectPing(Instant::now());
-            } else {
+                peer_info
+            });
+            if !did_update {
                 log::warn!("Failed to update indirectly pinged peer state {peer}; this is a programming error");
             }
         }
@@ -593,9 +571,11 @@ impl KaboodleInner {
 
         // - send a PING message to P and start a timeout
         //     - if P replies with an ACK, mark the peer as up
-        if let Some(peer_info) = known_peers.get_mut(target_peer) {
+        let did_update = known_peers.update(target_peer, |mut peer_info| {
             peer_info.state = PeerState::WaitingForPing(Instant::now());
-        } else {
+            peer_info
+        });
+        if !did_update {
             log::warn!("Failed to update randomly-selected peer state {target_peer}; this is a programming error");
             return;
         }

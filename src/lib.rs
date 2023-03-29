@@ -39,17 +39,21 @@ use errors::KaboodleError;
 use if_addrs::Interface;
 use kaboodle::{generate_fingerprint, KaboodleInner};
 use networking::best_available_interface;
+use observable_hashmap::ObservableHashMap;
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
-use structs::{KnownPeers, Peer, RunState};
+use structs::{KnownPeers, Peer, PeerInfo, RunState};
 use tokio::sync::{
     mpsc::{Sender, UnboundedReceiver, UnboundedSender},
     oneshot, Mutex,
 };
 
+use crate::observable_hashmap::Event;
+
 pub mod errors;
 mod kaboodle;
 pub mod networking;
+mod observable_hashmap;
 mod structs;
 
 type DiscoverySenders = Vec<UnboundedSender<(Peer, Bytes)>>;
@@ -65,6 +69,65 @@ pub struct Kaboodle {
     discovery_tx: Arc<Mutex<DiscoverySenders>>,
     interface: Interface,
     identity: Bytes,
+}
+
+/// Listens to changes on the given known_peers ObservableHashMap and turns them into higher-level
+/// channel transmissions for peer arrivals, departures, and changes to the mesh fingerprint.
+fn handle_known_peers_events(
+    known_peers: Arc<Mutex<KnownPeers>>,
+    discovery_tx: Arc<Mutex<DiscoverySenders>>,
+) {
+    tokio::spawn(async move {
+        let mut rx = {
+            let mut known_peers = known_peers.lock().await;
+            known_peers.add_observer()
+        };
+        while let Some(event) = rx.recv().await {
+            match event {
+                Event::Added(addr) => {
+                    let identity = {
+                        let known_peers = known_peers.lock().await;
+                        let Some(peer_info) = known_peers.get(&addr) else {
+                            log::warn!("Received Event::Added but peer is not present in known_peers; this is a programming error");
+                            continue;
+                        };
+                        peer_info.identity.clone()
+                    };
+
+                    // Any time Kaboodle::discover_peer is called, it creates a new channel and adds the
+                    // sender to our `discovery_tx` map.
+                    let mut discovery_tx = discovery_tx.lock().await;
+
+                    log::debug!(
+                        "New peer discovered; addr={addr}; identity={identity:?}; listeners={}",
+                        discovery_tx.len()
+                    );
+
+                    // Then, notify remaining channels:
+                    let mut closed_channels: Vec<usize> = vec![];
+                    for (idx, tx) in discovery_tx.iter().enumerate() {
+                        if let Err(_) = tx.send((addr, identity.clone())) {
+                            // Channel must be closed ¯\_(ツ)_/¯
+                            closed_channels.push(idx);
+                        }
+                    }
+                    for idx in closed_channels {
+                        discovery_tx.remove(idx);
+                    }
+                }
+                Event::Updated(addr, prev_value, new_value) => {
+                    if prev_value.identity == new_value.identity {
+                        // identity changes are the only thing that matters here; ignore if same
+                        continue;
+                    }
+                    log::debug!("Peer updated; addr={addr}");
+                }
+                Event::Removed(addr) => {
+                    log::debug!("Peer left; addr={addr}");
+                }
+            }
+        }
+    });
 }
 
 impl Kaboodle {
@@ -87,21 +150,27 @@ impl Kaboodle {
         preferred_interface: Option<Interface>,
         identity: impl Into<Bytes>,
     ) -> Result<Kaboodle, KaboodleError> {
-        // Maps from a peer's address to the known state of that peer. See PeerState for a
-        // description of the individual states.
-        let known_peers: KnownPeers = HashMap::new();
-
         let Some(interface) = preferred_interface.or_else(|| best_available_interface().ok()) else {
             return Err(KaboodleError::NoAvailableInterfaces);
         };
 
+        // Maps from a peer's address to the known state of that peer. See PeerState for a
+        // description of the individual states.
+        let known_peers = Arc::new(Mutex::new(ObservableHashMap::new()));
+
+        // Spin up a background task to listen to change notifications coming from our known_peers
+        // ObservableHashMap. It notifies us of additions, removals, and mutations; we derive more
+        // semantic high-level notifications for our consumer based on those.
+        let discovery_tx = Arc::new(Mutex::new(vec![]));
+        handle_known_peers_events(known_peers.clone(), discovery_tx.clone());
+
         Ok(Kaboodle {
-            known_peers: Arc::new(Mutex::new(known_peers)),
+            known_peers,
             state: RunState::NotStarted,
             interface,
             broadcast_port,
             identity: identity.into(),
-            discovery_tx: Arc::new(Mutex::new(vec![])),
+            discovery_tx,
 
             // These will get set whenever `start` is called:
             self_addr: None,
@@ -118,7 +187,7 @@ impl Kaboodle {
         assert!(self.self_addr.is_none());
 
         self.state = RunState::Running;
-        let mut result = KaboodleInner::start(
+        let result = KaboodleInner::start(
             &self.interface,
             self.broadcast_port,
             self.known_peers.clone(),
@@ -128,43 +197,6 @@ impl Kaboodle {
 
         self.self_addr = Some(result.self_addr);
         self.cancellation_tx = Some(result.cancellation_tx);
-
-        // Spin up a background task to listen to KaboodleInner's notifications of new peer
-        // discoveries. We have to drain `discovery_rx` continuously, or else the KaboodleInner task
-        // will be blocked next time it discovers a peer (since it's a channel with a capacity of
-        // 1).
-        let discovery_tx = self.discovery_tx.clone();
-        tokio::spawn(async move {
-            while let Some((addr, identity)) = result.discovery_rx.recv().await {
-                let mut discovery_tx = discovery_tx.lock().await;
-
-                // Any time Kaboodle::discover_peer is called, it creates a new channel and adds the
-                // sender to our `discovery_tx` map.
-                // First, remove any channels that have been closed:
-                let indices_to_remove: Vec<usize> = discovery_tx
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, tx)| if tx.is_closed() { Some(idx) } else { None })
-                    .collect();
-                for idx in indices_to_remove {
-                    discovery_tx.remove(idx);
-                }
-
-                log::debug!(
-                    "New peer discovered; addr={addr}; identity={identity:?}; listeners={}",
-                    discovery_tx.len()
-                );
-
-                // Then, notify remaining channels:
-                for tx in discovery_tx.iter() {
-                    if let Err(err) = tx.send((addr, identity.clone())) {
-                        log::warn!(
-                            "Failed to notify listener of newly discovered peer; err={err:?}"
-                        );
-                    }
-                }
-            }
-        });
 
         Ok(())
     }
@@ -200,10 +232,6 @@ impl Kaboodle {
     pub fn discover_peers(
         &mut self,
     ) -> Result<UnboundedReceiver<(SocketAddr, Bytes)>, KaboodleError> {
-        if self.cancellation_tx.is_none() {
-            return Err(KaboodleError::NotRunning);
-        }
-
         // Create a channel and add it to our list of discovery channel (ha) transmitters. Whenever
         // Kaboodle is notified of a new peer by KaboodleInner, Kaboodle will send that peer out to
         // all of the transmitters.
@@ -267,8 +295,8 @@ impl Kaboodle {
     }
 
     /// Get our current list of known peers and their current state.
-    pub async fn peer_states(&self) -> KnownPeers {
+    pub async fn peer_states(&self) -> HashMap<Peer, PeerInfo> {
         let known_peers = self.known_peers.lock().await;
-        known_peers.clone()
+        known_peers.clone().into()
     }
 }
