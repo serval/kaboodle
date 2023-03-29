@@ -57,6 +57,7 @@ mod observable_hashmap;
 mod structs;
 
 type DiscoverySenders = Vec<UnboundedSender<(Peer, Bytes)>>;
+type DepartureSenders = Vec<UnboundedSender<Peer>>;
 
 /// Data managed by a Kaboodle mesh client.
 #[derive(Debug)]
@@ -67,6 +68,7 @@ pub struct Kaboodle {
     self_addr: Option<SocketAddr>,
     cancellation_tx: Option<Sender<()>>,
     discovery_tx: Arc<Mutex<DiscoverySenders>>,
+    departure_tx: Arc<Mutex<DepartureSenders>>,
     interface: Interface,
     identity: Bytes,
 }
@@ -76,7 +78,25 @@ pub struct Kaboodle {
 fn handle_known_peers_events(
     known_peers: Arc<Mutex<KnownPeers>>,
     discovery_tx: Arc<Mutex<DiscoverySenders>>,
+    departure_tx: Arc<Mutex<DepartureSenders>>,
 ) {
+    /// Sends the given payload to the given list of channels.
+    fn broadcast_to_channels<T>(payload: T, channels: &mut Vec<UnboundedSender<T>>)
+    where
+        T: Clone,
+    {
+        let mut closed_channels: Vec<usize> = vec![];
+        for (idx, tx) in channels.iter().enumerate() {
+            if tx.send(payload.clone()).is_err() {
+                // Channel must be closed ¯\_(ツ)_/¯
+                closed_channels.push(idx);
+            }
+        }
+        for idx in closed_channels {
+            channels.remove(idx);
+        }
+    }
+
     tokio::spawn(async move {
         let mut rx = {
             let mut known_peers = known_peers.lock().await;
@@ -103,17 +123,7 @@ fn handle_known_peers_events(
                         discovery_tx.len()
                     );
 
-                    // Then, notify remaining channels:
-                    let mut closed_channels: Vec<usize> = vec![];
-                    for (idx, tx) in discovery_tx.iter().enumerate() {
-                        if let Err(_) = tx.send((addr, identity.clone())) {
-                            // Channel must be closed ¯\_(ツ)_/¯
-                            closed_channels.push(idx);
-                        }
-                    }
-                    for idx in closed_channels {
-                        discovery_tx.remove(idx);
-                    }
+                    broadcast_to_channels((addr, identity.clone()), &mut discovery_tx);
                 }
                 Event::Updated(addr, prev_value, new_value) => {
                     if prev_value.identity == new_value.identity {
@@ -124,6 +134,9 @@ fn handle_known_peers_events(
                 }
                 Event::Removed(addr) => {
                     log::debug!("Peer left; addr={addr}");
+
+                    let mut departure_tx = departure_tx.lock().await;
+                    broadcast_to_channels(addr, &mut departure_tx);
                 }
             }
         }
@@ -162,7 +175,12 @@ impl Kaboodle {
         // ObservableHashMap. It notifies us of additions, removals, and mutations; we derive more
         // semantic high-level notifications for our consumer based on those.
         let discovery_tx = Arc::new(Mutex::new(vec![]));
-        handle_known_peers_events(known_peers.clone(), discovery_tx.clone());
+        let departure_tx = Arc::new(Mutex::new(vec![]));
+        handle_known_peers_events(
+            known_peers.clone(),
+            discovery_tx.clone(),
+            departure_tx.clone(),
+        );
 
         Ok(Kaboodle {
             known_peers,
@@ -171,6 +189,7 @@ impl Kaboodle {
             broadcast_port,
             identity: identity.into(),
             discovery_tx,
+            departure_tx,
 
             // These will get set whenever `start` is called:
             self_addr: None,
@@ -226,6 +245,22 @@ impl Kaboodle {
         }
 
         Ok(())
+    }
+
+    /// Returns a channel receiver that will be invoked every time a peer leaves the mesh.
+    pub fn discover_departures(&mut self) -> Result<UnboundedReceiver<SocketAddr>, KaboodleError> {
+        // Create a channel and add it to our list of discovery channel (ha) transmitters. Whenever
+        // Kaboodle is notified of a new peer by KaboodleInner, Kaboodle will send that peer out to
+        // all of the transmitters.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let departure_tx = self.departure_tx.clone();
+        tokio::spawn(async move {
+            let mut locked = departure_tx.lock().await;
+            locked.push(tx);
+        });
+
+        Ok(rx)
     }
 
     /// Returns a channel receiver that will be invoked every time a new peer is discovered.

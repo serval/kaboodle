@@ -105,11 +105,22 @@ async fn main() {
         });
     }
 
-    // Write out a message the first time a new peer is discovered
+    // Write out a message the very first time a new peer is discovered
     if let Ok(discovery_rx) = kaboodle.discover_next_peer() {
         tokio::spawn(async move {
             if let Ok(new_peer) = discovery_rx.await {
                 log::info!("First peer discovered! {new_peer:?}");
+            }
+        });
+    }
+
+    // Write out a message any time a peer leaves
+    if let Ok(mut departure_rx) = kaboodle.discover_departures() {
+        tokio::spawn(async move {
+            loop {
+                if let Some(new_peer) = departure_rx.recv().await {
+                    log::info!("Peer left: {new_peer:?}");
+                }
             }
         });
     }
