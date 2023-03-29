@@ -125,6 +125,17 @@ async fn main() {
         });
     }
 
+    // Write out a message any time a peer leaves
+    if let Ok(mut fingerprint_rx) = kaboodle.discover_fingerprint_changes() {
+        tokio::spawn(async move {
+            loop {
+                if let Some(fingerprint) = fingerprint_rx.recv().await {
+                    log::info!("Fingerprint is now {fingerprint}");
+                }
+            }
+        });
+    }
+
     loop {
         // Dump our list of peers out
         let known_peers = kaboodle.peer_states().await;
