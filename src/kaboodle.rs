@@ -3,7 +3,7 @@
 use crate::errors::KaboodleError;
 use crate::networking::create_broadcast_sockets;
 use crate::structs::{
-    KnownPeers, Peer, PeerInfo, PeerState, SwimBroadcast, SwimEnvelope, SwimMessage,
+    Fingerprint, KnownPeers, Peer, PeerInfo, PeerState, SwimBroadcast, SwimEnvelope, SwimMessage,
 };
 use bytes::Bytes;
 use if_addrs::Interface;
@@ -65,7 +65,7 @@ const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
 /// Because our only goal is to detect differences between two peer's understanding of the mesh,
 /// rather than guard against malicious tampering, CRC32 is a good fit: it's sufficiently robust for
 /// the task at hand, fast to compute, and has a very compact representation (a single u32).
-pub fn generate_fingerprint(known_peers: &KnownPeers) -> u32 {
+pub fn generate_fingerprint(known_peers: &KnownPeers) -> Fingerprint {
     let mut hosts: Vec<String> = known_peers.keys().map(|peer| peer.to_string()).collect();
     hosts.sort();
     crc32fast::hash(hosts.join(",").as_bytes())

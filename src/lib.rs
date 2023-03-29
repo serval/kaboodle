@@ -42,7 +42,7 @@ use networking::best_available_interface;
 use observable_hashmap::ObservableHashMap;
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
-use structs::{KnownPeers, Peer, PeerInfo, RunState};
+use structs::{Fingerprint, KnownPeers, Peer, PeerInfo, RunState};
 use tokio::sync::{
     mpsc::{Sender, UnboundedReceiver, UnboundedSender},
     oneshot, Mutex,
@@ -58,6 +58,7 @@ mod structs;
 
 type DiscoverySenders = Vec<UnboundedSender<(Peer, Bytes)>>;
 type DepartureSenders = Vec<UnboundedSender<Peer>>;
+type FingerprintSenders = Vec<UnboundedSender<Fingerprint>>;
 
 /// Data managed by a Kaboodle mesh client.
 #[derive(Debug)]
@@ -69,6 +70,7 @@ pub struct Kaboodle {
     cancellation_tx: Option<Sender<()>>,
     discovery_tx: Arc<Mutex<DiscoverySenders>>,
     departure_tx: Arc<Mutex<DepartureSenders>>,
+    fingerprint_tx: Arc<Mutex<FingerprintSenders>>,
     interface: Interface,
     identity: Bytes,
 }
@@ -79,6 +81,7 @@ fn handle_known_peers_events(
     known_peers: Arc<Mutex<KnownPeers>>,
     discovery_tx: Arc<Mutex<DiscoverySenders>>,
     departure_tx: Arc<Mutex<DepartureSenders>>,
+    fingerprint_tx: Arc<Mutex<FingerprintSenders>>,
 ) {
     /// Sends the given payload to the given list of channels.
     fn broadcast_to_channels<T>(payload: T, channels: &mut Vec<UnboundedSender<T>>)
@@ -130,6 +133,7 @@ fn handle_known_peers_events(
                         // identity changes are the only thing that matters here; ignore if same
                         continue;
                     }
+
                     log::debug!("Peer updated; addr={addr}");
                 }
                 Event::Removed(addr) => {
@@ -138,6 +142,15 @@ fn handle_known_peers_events(
                     let mut departure_tx = departure_tx.lock().await;
                     broadcast_to_channels(addr, &mut departure_tx);
                 }
+            }
+
+            // If we didn't `continue` in one of the match arms, then send out a fingerprint change
+            // notification.
+            let mut fingerprint_tx = fingerprint_tx.lock().await;
+            if !fingerprint_tx.is_empty() {
+                let known_peers = known_peers.lock().await;
+                let fingerprint = generate_fingerprint(&known_peers);
+                broadcast_to_channels(fingerprint, &mut fingerprint_tx);
             }
         }
     });
@@ -176,10 +189,12 @@ impl Kaboodle {
         // semantic high-level notifications for our consumer based on those.
         let discovery_tx = Arc::new(Mutex::new(vec![]));
         let departure_tx = Arc::new(Mutex::new(vec![]));
+        let fingerprint_tx = Arc::new(Mutex::new(vec![]));
         handle_known_peers_events(
             known_peers.clone(),
             discovery_tx.clone(),
             departure_tx.clone(),
+            fingerprint_tx.clone(),
         );
 
         Ok(Kaboodle {
@@ -190,6 +205,7 @@ impl Kaboodle {
             identity: identity.into(),
             discovery_tx,
             departure_tx,
+            fingerprint_tx,
 
             // These will get set whenever `start` is called:
             self_addr: None,
@@ -263,6 +279,27 @@ impl Kaboodle {
         Ok(rx)
     }
 
+    /// Returns a channel receiver that will be invoked every time the mesh fingerprint changes
+    /// (e.g. when a peer arrives, leaves, or changes their identity payload). Note that the channel
+    /// will not be passed the new fingerprint automatically; interested parties can retrieve the
+    /// current (new) fingerprint by calling `self.fingerprint()`.
+    pub fn discover_fingerprint_changes(
+        &mut self,
+    ) -> Result<UnboundedReceiver<Fingerprint>, KaboodleError> {
+        // Create a channel and add it to our list of discovery channel (ha) transmitters. Whenever
+        // Kaboodle is notified of a new peer by KaboodleInner, Kaboodle will send that peer out to
+        // all of the transmitters.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let fingerprint_tx = self.fingerprint_tx.clone();
+        tokio::spawn(async move {
+            let mut locked = fingerprint_tx.lock().await;
+            locked.push(tx);
+        });
+
+        Ok(rx)
+    }
+
     /// Returns a channel receiver that will be invoked every time a new peer is discovered.
     pub fn discover_peers(
         &mut self,
@@ -310,7 +347,7 @@ impl Kaboodle {
 
     /// Calculate an CRC-32 hash of the current list of peers. The list is sorted before hashing, so
     /// it should be stable against ordering differences across different hosts.
-    pub async fn fingerprint(&self) -> u32 {
+    pub async fn fingerprint(&self) -> Fingerprint {
         let known_peers = self.known_peers.lock().await;
         generate_fingerprint(&known_peers)
     }

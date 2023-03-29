@@ -5,6 +5,7 @@ use std::{collections::HashMap, fmt::Display, net::SocketAddr, time::Instant};
 use crate::observable_hashmap::ObservableHashMap;
 
 pub type Peer = SocketAddr;
+pub type Fingerprint = u32;
 pub type KnownPeers = ObservableHashMap<Peer, PeerInfo>;
 
 /// PeerInfo
