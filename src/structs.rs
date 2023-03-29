@@ -2,8 +2,10 @@ use bytes::Bytes;
 use serde_derive::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display, net::SocketAddr, time::Instant};
 
+use crate::observable_hashmap::ObservableHashMap;
+
 pub type Peer = SocketAddr;
-pub type KnownPeers = HashMap<Peer, PeerInfo>;
+pub type KnownPeers = ObservableHashMap<Peer, PeerInfo>;
 
 /// PeerInfo
 #[derive(Clone, Debug, Eq, PartialEq)]
