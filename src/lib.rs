@@ -35,6 +35,7 @@
 //! ```
 
 use bytes::Bytes;
+use discovery::discover_mesh_member;
 use errors::KaboodleError;
 use events::{handle_known_peers_events, DepartureSenders, DiscoverySenders, FingerprintSenders};
 use if_addrs::Interface;
@@ -49,6 +50,7 @@ use tokio::sync::{
     oneshot, Mutex,
 };
 
+mod discovery;
 pub mod errors;
 mod events;
 mod kaboodle;
@@ -307,5 +309,19 @@ impl Kaboodle {
             .iter()
             .map(|(peer, peer_info)| (peer.to_owned(), peer_info.to_owned()))
             .collect::<HashMap<Peer, PeerInfo>>()
+    }
+
+    /// Discovers one member of the mesh on the given port and interface, without actually joining
+    /// the mesh. Use this if you simply need to discover a member of the mesh but do not want to
+    /// join the mesh yourself.
+    pub async fn discover_mesh_member(
+        broadcast_port: u16,
+        preferred_interface: Option<Interface>,
+    ) -> Result<(SocketAddr, Bytes), KaboodleError> {
+        let Some(interface) = preferred_interface.or_else(|| best_available_interface().ok()) else {
+            return Err(KaboodleError::NoAvailableInterfaces);
+        };
+        let member = discover_mesh_member(broadcast_port, interface).await?;
+        Ok(member)
     }
 }

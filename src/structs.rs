@@ -61,6 +61,9 @@ pub enum SwimBroadcast {
     Join { addr: Peer, identity: Bytes },
     /// Announces that we believe the given Peer (not us) is down
     Failed(Peer),
+    /// Sent to attempt to discover any member of the mesh, without the intent to join the mesh
+    /// as a Peer.
+    Probe(SocketAddr),
 }
 
 /// The SwimEnvelope structure wraps all messages that we will send directly to another peer. In
@@ -71,6 +74,13 @@ pub struct SwimEnvelope {
     pub identity: Bytes,
     /// The actual message that the peer is sending.
     pub msg: SwimMessage,
+}
+
+/// Sent in response to a SwimBroadcast::Probe message, this is used to tell the probe initiator the
+/// identity of the responding node.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProbeResponse {
+    pub identity: Bytes,
 }
 
 /// The SwimMessage enum represents messages we will send directly to another peer.

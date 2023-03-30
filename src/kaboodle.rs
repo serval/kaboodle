@@ -3,7 +3,8 @@
 use crate::errors::KaboodleError;
 use crate::networking::create_broadcast_sockets;
 use crate::structs::{
-    Fingerprint, KnownPeers, Peer, PeerInfo, PeerState, SwimBroadcast, SwimEnvelope, SwimMessage,
+    Fingerprint, KnownPeers, Peer, PeerInfo, PeerState, ProbeResponse, SwimBroadcast, SwimEnvelope,
+    SwimMessage,
 };
 use bytes::Bytes;
 use if_addrs::Interface;
@@ -228,12 +229,12 @@ impl KaboodleInner {
     /// one instance will actually receive broadcast packets.
     async fn handle_incoming_broadcasts(&mut self) {
         let mut buf = [0; INCOMING_BUFFER_SIZE];
-        while let Ok((_len, sender)) = self.broadcast_in_sock.try_recv_from(&mut buf) {
+        while let Ok((len, sender)) = self.broadcast_in_sock.try_recv_from(&mut buf) {
             let Ok(msg) = bincode::deserialize::<SwimBroadcast>(&buf) else {
                 // This can happen if there are multiple incompatible versions of Kaboodle running
                 // at the same time -- e.g. if we've introduced a breaking change to the
                 // SwimBroadcast enum.
-                log::warn!("Failed to deserialize bytes: {buf:?}");
+                log::warn!("Failed to deserialize incoming message ({} bytes)", len);
                 continue;
             };
             log::debug!("RECV-BROADCAST [{sender}] {msg:?}");
@@ -269,26 +270,59 @@ impl KaboodleInner {
                         self.maybe_send_known_peers_to_peer(addr).await;
                     }
                 }
+                SwimBroadcast::Probe(addr) => {
+                    log::debug!("Got a probe from {addr}");
+                    self.maybe_respond_to_probe(addr).await;
+                }
             }
         }
     }
 
-    async fn maybe_send_known_peers_to_peer(&mut self, addr: SocketAddr) {
+    async fn maybe_respond_to_probe(&mut self, addr: SocketAddr) {
+        if !self.should_respond_to_broadcast().await {
+            log::debug!("Not sending known peers to new peer in the hopes that someone else will");
+            return;
+        }
+
+        let bytes = bincode::serialize(&ProbeResponse {
+            identity: self.identity.clone(),
+        })
+        .expect("Failed to serialize probe response");
+
+        if let Err(err) = self.send_bytes(&addr, bytes).await {
+            // Log a warning so we know something went wrong, but there's not actually
+            // anything to be done in this case -- so long as at least one other
+            // member of the mesh succesfully sends a response to the newcomer, we
+            // should be okay.
+            log::warn!("Failed to send probe response to {addr}: {err:?}");
+        }
+    }
+
+    async fn should_respond_to_broadcast(&mut self) -> bool {
         let known_peers = self.known_peers.lock().await;
 
-        // Figure out whether we should send the new peer our list of known peers
-        // Everyone in the mesh receives these broadcasts, so we don't want to respond
-        // 100% of the time -- otherwise, new peers in large meshes would receive an
-        // avalanche of redundant peer lists from every other peer when they first show
+        // Everyone in the mesh receives broadcast, so we don't want to respond
+        // 100% of the time -- otherwise, broadcasters (e.g. new peers in large meshes or anyone
+        // trying to probe an existing mesh to find a member member) would receive an
+        // avalanche of redundant messages from every mesh member when they first show
         // up. The exact formula may get tweaked over time, but the intention is to
         // ramp down from a 100% chance if we don't know of any other peers yet to a
         // minimum of 1% once we have some sufficient number.
         // See Section 3.2 in the SWIM paper for more thoughts on this logic.
-        let num_other_peers = known_peers.len() - 2; // minus ourselves and the newcomer
+        let num_other_peers = (known_peers.len() as i64) - 2; // minus ourselves and the sender
+        if num_other_peers <= 0 {
+            // No one else is going to respond, that's for sure
+            return true;
+        }
+
         let percent_chance_of_sending_peers =
-            std::cmp::max(1, 100 - i64::pow(num_other_peers as i64, 2)) as f64 / 100.0;
-        let should_send_peers = self.rng.gen_bool(percent_chance_of_sending_peers);
-        if !should_send_peers {
+            std::cmp::max(1, 100 - i64::pow(num_other_peers, 2)) as f64 / 100.0;
+
+        self.rng.gen_bool(percent_chance_of_sending_peers)
+    }
+
+    async fn maybe_send_known_peers_to_peer(&mut self, addr: SocketAddr) {
+        if !self.should_respond_to_broadcast().await {
             log::debug!("Not sending known peers to new peer in the hopes that someone else will");
             return;
         }
@@ -296,6 +330,7 @@ impl KaboodleInner {
         // Send a list of known peers to the newcomer
         // todo: we might need to only send a subset in order to keep packet size down;
         // that is a problem for another day.
+        let known_peers = self.known_peers.lock().await;
         let mut other_peers: HashMap<Peer, Bytes> = known_peers
             .iter()
             .map(|(other_peer, other_peer_info)| {
@@ -328,12 +363,12 @@ impl KaboodleInner {
 
     async fn handle_incoming_messages(&mut self) {
         let mut buf = [0; INCOMING_BUFFER_SIZE];
-        while let Ok((_len, sender)) = self.sock.try_recv_from(&mut buf) {
+        while let Ok((len, sender)) = self.sock.try_recv_from(&mut buf) {
             let Ok(env) = bincode::deserialize::<SwimEnvelope>(&buf) else {
                 // This can happen if there are multiple incompatible versions of Kaboodle running
                 // at the same time -- e.g. if we've introduced a breaking change to the SwimMessage
                 // enum.
-                log::warn!("Failed to deserialize bytes: {buf:?}");
+                log::warn!("Failed to deserialize incoming message ({} bytes)", len);
                 continue;
             };
             log::debug!("RECV [{} ({})] {:?}", sender, env.identity.len(), env.msg);

@@ -36,6 +36,8 @@ struct Args {
     interface: Option<String>,
     #[arg(long, default_value = "7475")]
     port: u16,
+    #[arg(long, default_value = "false")]
+    probe: bool,
 }
 
 #[tokio::main]
@@ -54,6 +56,22 @@ async fn main() {
             args.interface.unwrap()
         );
         exit(1);
+    }
+
+    if args.probe {
+        // Probe the mesh, rather than join it
+        return match Kaboodle::discover_mesh_member(args.port, preferred_interface).await {
+            Ok((addr, identity_bytes)) => {
+                let identity = String::from_utf8(identity_bytes.to_vec())
+                    .map(|id| format!(" ({id})"))
+                    .unwrap_or_default();
+                println!("Discovered mesh member: {addr}{identity}");
+            }
+            Err(err) => {
+                eprintln!("Failed to discovery mesh member: {err}");
+                exit(1);
+            }
+        };
     }
 
     // Kaboodle treats identity as an opaque blob of bytes; it has no meaning of its own. It is
