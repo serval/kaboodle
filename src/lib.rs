@@ -104,42 +104,52 @@ fn handle_known_peers_events(
             let mut known_peers = known_peers.lock().await;
             known_peers.add_observer()
         };
+
         while let Some(event) = rx.recv().await {
-            match event {
-                Event::Added(addr) => {
-                    let identity = {
-                        let known_peers = known_peers.lock().await;
-                        let Some(peer_info) = known_peers.get(&addr) else {
-                            log::warn!("Received Event::Added but peer is not present in known_peers; this is a programming error");
-                            continue;
+            // We got an event; if there are more that are ready to receive, consume them all so we
+            // can just send out a single fingerprint change event.
+            let mut events = vec![event];
+            while let Ok(event) = rx.try_recv() {
+                events.push(event);
+            }
+
+            for event in events {
+                match event {
+                    Event::Added(addr) => {
+                        let identity = {
+                            let known_peers = known_peers.lock().await;
+                            let Some(peer_info) = known_peers.get(&addr) else {
+                                log::warn!("Received Event::Added but peer is not present in known_peers; this is a programming error");
+                                continue;
+                            };
+                            peer_info.identity.clone()
                         };
-                        peer_info.identity.clone()
-                    };
 
-                    // Any time Kaboodle::discover_peer is called, it creates a new channel and adds the
-                    // sender to our `discovery_tx` map.
-                    let mut discovery_tx = discovery_tx.lock().await;
+                        // Any time Kaboodle::discover_peer is called, it creates a new channel and adds the
+                        // sender to our `discovery_tx` map.
+                        let mut discovery_tx = discovery_tx.lock().await;
 
-                    log::debug!(
-                        "New peer discovered; addr={addr}; identity={identity:?}; listeners={}",
-                        discovery_tx.len()
-                    );
+                        log::debug!(
+                            "New peer discovered; addr={addr}; identity={identity:?}; listeners={}",
+                            discovery_tx.len()
+                        );
 
-                    broadcast_to_channels((addr, identity.clone()), &mut discovery_tx);
-                }
-                Event::Updated(addr, prev_value, new_value) => {
-                    if prev_value.identity == new_value.identity {
-                        // identity changes are the only thing that matters here; ignore if same
-                        continue;
+                        broadcast_to_channels((addr, identity.clone()), &mut discovery_tx);
                     }
+                    Event::Updated(addr, prev_value, new_value) => {
+                        if prev_value.identity == new_value.identity {
+                            // identity changes are the only thing that matters here; ignore if same
+                            continue;
+                        }
 
-                    log::debug!("Peer updated; addr={addr}");
-                }
-                Event::Removed(addr) => {
-                    log::debug!("Peer left; addr={addr}");
+                        log::debug!("Peer updated; addr={addr}");
+                    }
+                    Event::Removed(addr) => {
+                        log::debug!("Peer left; addr={addr}");
 
-                    let mut departure_tx = departure_tx.lock().await;
-                    broadcast_to_channels(addr, &mut departure_tx);
+                        let mut departure_tx = departure_tx.lock().await;
+                        broadcast_to_channels(addr, &mut departure_tx);
+                    }
                 }
             }
 
