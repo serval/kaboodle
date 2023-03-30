@@ -147,6 +147,12 @@ fn handle_known_peers_events(
                         log::debug!("Peer updated; addr={addr}");
                     }
                     Event::Removed(addr) => {
+                        let known_peers = known_peers.lock().await;
+                        if known_peers.contains_key(&addr) {
+                            // Well, they got added back right away, apparently, so ignore this
+                            continue;
+                        }
+
                         log::debug!("Peer left; addr={addr}");
 
                         let mut departure_tx = departure_tx.lock().await;
