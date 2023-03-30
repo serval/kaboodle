@@ -105,6 +105,8 @@ fn handle_known_peers_events(
             known_peers.add_observer()
         };
 
+        let mut prev_fingerprint = 0;
+
         while let Some(event) = rx.recv().await {
             // We got an event; if there are more that are ready to receive, consume them all so we
             // can just send out a single fingerprint change event.
@@ -165,7 +167,10 @@ fn handle_known_peers_events(
                 // and the fingerprint would be `0` anyhow, so don't bother.
                 if !known_peers.is_empty() {
                     let fingerprint = generate_fingerprint(&known_peers);
-                    broadcast_to_channels(fingerprint, &mut fingerprint_tx);
+                    if fingerprint != prev_fingerprint {
+                        prev_fingerprint = fingerprint;
+                        broadcast_to_channels(fingerprint, &mut fingerprint_tx);
+                    }
                 }
             }
         }
