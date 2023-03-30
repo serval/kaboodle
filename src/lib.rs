@@ -42,7 +42,7 @@ use networking::best_available_interface;
 use observable_hashmap::ObservableHashMap;
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
-use structs::{Fingerprint, KnownPeers, Peer, PeerInfo, RunState};
+use structs::{Fingerprint, KnownPeers, Peer, PeerInfo};
 use tokio::sync::{
     mpsc::{Sender, UnboundedReceiver, UnboundedSender},
     oneshot, Mutex,
@@ -64,7 +64,6 @@ type FingerprintSenders = Vec<UnboundedSender<Fingerprint>>;
 #[derive(Debug)]
 pub struct Kaboodle {
     known_peers: Arc<Mutex<KnownPeers>>,
-    state: RunState,
     broadcast_port: u16,
     self_addr: Option<SocketAddr>,
     cancellation_tx: Option<Sender<()>>,
@@ -199,7 +198,6 @@ impl Kaboodle {
 
         Ok(Kaboodle {
             known_peers,
-            state: RunState::NotStarted,
             interface,
             broadcast_port,
             identity: identity.into(),
@@ -215,13 +213,12 @@ impl Kaboodle {
 
     /// Tell the client to connect to the network and find other clients.
     pub async fn start(&mut self) -> Result<(), KaboodleError> {
-        if self.state == RunState::Running {
+        if self.self_addr.is_some() {
             return Ok(());
         }
-        assert!(self.cancellation_tx.is_none());
-        assert!(self.self_addr.is_none());
 
-        self.state = RunState::Running;
+        assert!(self.cancellation_tx.is_none());
+
         let result = KaboodleInner::start(
             &self.interface,
             self.broadcast_port,
@@ -238,10 +235,10 @@ impl Kaboodle {
 
     /// Disconnect this client from the mesh network.
     pub async fn stop(&mut self) -> Result<(), KaboodleError> {
-        if self.state != RunState::Running {
+        if self.self_addr.is_none() {
+            // we're not actually running ¯\_(ツ)_/¯
             return Ok(());
         }
-        self.state = RunState::Stopped;
 
         // Remove ourself from the known peers list and forget about our soon-to-be-previous
         // self_addr.

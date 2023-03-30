@@ -46,13 +46,6 @@ impl Display for PeerState {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub enum RunState {
-    NotStarted,
-    Running,
-    Stopped,
-}
-
 /// The SwimBroadcast enum represents messages that we broadcast to the entire mesh.
 /// Section 4 of the SWIM paper mentions that failure information can be piggybacked into the non-
 /// broadcast ping and ack messages and (section 4.1) disseminated using a gossip protocol, e.g.

@@ -18,7 +18,4 @@ pub enum KaboodleError {
 
     #[error("Unable to stop: {0}")]
     StoppingFailed(String),
-
-    #[error("Functionality unavailable because the mesh is not currently running")]
-    NotRunning,
 }
