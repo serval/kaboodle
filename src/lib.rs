@@ -164,20 +164,22 @@ fn handle_known_peers_events(
             // If we didn't `continue` in one of the match arms, then send out a fingerprint change
             // notification.
             let mut fingerprint_tx = fingerprint_tx.lock().await;
-            if !fingerprint_tx.is_empty() {
-                let known_peers = known_peers.lock().await;
+            if fingerprint_tx.is_empty() {
+                continue;
+            }
 
-                // Make sure known_peers isn't empty; if it is, then we got called after Kaboodle
-                // was stopped when it happened to not know about any other peers. This isn't a
-                // particularly helpful situation in which to broadcast a fingerprint change event,
-                // and the fingerprint would be `0` anyhow, so don't bother.
-                if !known_peers.is_empty() {
-                    let fingerprint = generate_fingerprint(&known_peers);
-                    if fingerprint != prev_fingerprint {
-                        prev_fingerprint = fingerprint;
-                        broadcast_to_channels(fingerprint, &mut fingerprint_tx);
-                    }
-                }
+            // Make sure known_peers isn't empty; if it is, then we got called after Kaboodle
+            // was stopped when it happened to not know about any other peers. This isn't a
+            // particularly helpful situation in which to broadcast a fingerprint change event,
+            // and the fingerprint would be `0` anyhow, so don't bother.
+            let known_peers = known_peers.lock().await;
+            if known_peers.is_empty() {
+                continue;
+            }
+            let fingerprint = generate_fingerprint(&known_peers);
+            if fingerprint != prev_fingerprint {
+                prev_fingerprint = fingerprint;
+                broadcast_to_channels(fingerprint, &mut fingerprint_tx);
             }
         }
     });
