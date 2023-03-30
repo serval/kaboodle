@@ -307,7 +307,6 @@ impl KaboodleInner {
                     break bytes;
                 }
 
-                println!("TOO BIG {}", bytes.len());
                 // Alas, this payload is too large. Remove a peer at random and try again.
                 let peer_to_exclude = other_peers.keys().choose(&mut self.rng).unwrap().to_owned();
                 other_peers.remove(&peer_to_exclude);
