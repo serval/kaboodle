@@ -239,12 +239,12 @@ impl KaboodleInner {
                         state: PeerState::Known(Instant::now()),
                     };
                     let mut known_peers = self.known_peers.lock().await;
-                    known_peers.insert(addr, peer_info);
+                    let is_new_peer = known_peers.insert(addr, peer_info).is_none();
                     drop(known_peers);
 
-                    // todo: maybe only send this if `is_new_peer`? (this would be a behaviour
-                    // change, so I am not doing it right now.)
-                    self.maybe_send_known_peers_to_peer(addr).await;
+                    if is_new_peer {
+                        self.maybe_send_known_peers_to_peer(addr).await;
+                    }
                 }
             }
         }

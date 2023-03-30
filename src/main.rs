@@ -93,6 +93,7 @@ async fn main() {
 
     const SPINNER_FRAMES: &str = "⣾⣽⣻⢿⡿⣟⣯⣷";
     let mut spinner_frame: usize = 0;
+    let should_show_spinner = atty::is(atty::Stream::Stdin);
 
     loop {
         let mut did_emit_output = false;
@@ -102,7 +103,7 @@ async fn main() {
             let identity = String::from_utf8(identity_bytes.to_vec())
                 .map(|id| format!(" ({id})"))
                 .unwrap_or_default();
-            if !did_emit_output {
+            if should_show_spinner && !did_emit_output {
                 print!("\x0D\x0D"); // delete the last frame of the spinner
                 did_emit_output = true;
             }
@@ -111,7 +112,7 @@ async fn main() {
 
         // Check for departed peers
         if let Ok(departed_peer) = departure_rx.try_recv() {
-            if !did_emit_output {
+            if should_show_spinner && !did_emit_output {
                 print!("\x0D\x0D"); // delete the last frame of the spinner
                 did_emit_output = true;
             }
@@ -125,7 +126,7 @@ async fn main() {
             new_fingerprint = Some(fingerprint);
         }
         if let Some(fingerprint) = new_fingerprint {
-            if !did_emit_output {
+            if should_show_spinner && !did_emit_output {
                 print!("\x0D\x0D"); // delete the last frame of the spinner
             }
 
@@ -143,18 +144,20 @@ async fn main() {
             }
         }
 
-        // Kaboodle only does work every second, which means there's no value in trying to
-        // receive data from the various channels more than once a second. However, we'd like to
-        // have a nice, smooth spinner, so run ten frames of animation back-to-back:
-        let num_frames = SPINNER_FRAMES.chars().count();
-        for _ in 0..10 {
-            print!(
-                "\x0D\x0D{} ",
-                SPINNER_FRAMES.chars().nth(spinner_frame).unwrap()
-            );
-            std::io::stdout().flush().unwrap();
-            spinner_frame = (spinner_frame + 1) % num_frames;
-            sleep(Duration::from_millis(100));
+        if should_show_spinner {
+            // Kaboodle only does work every second, which means there's no value in trying to
+            // receive data from the various channels more than once a second. However, we'd like to
+            // have a nice, smooth spinner, so run ten frames of animation back-to-back:
+            let num_frames = SPINNER_FRAMES.chars().count();
+            for _ in 0..10 {
+                print!(
+                    "\x0D\x0D{} ",
+                    SPINNER_FRAMES.chars().nth(spinner_frame).unwrap()
+                );
+                std::io::stdout().flush().unwrap();
+                spinner_frame = (spinner_frame + 1) % num_frames;
+                sleep(Duration::from_millis(100));
+            }
         }
     }
 }
