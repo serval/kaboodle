@@ -6,6 +6,9 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum KaboodleError {
+    #[error("Invalid operation: {0}")]
+    InvalidOperation(String),
+
     /// A conversion for std:io:Error
     #[error("std::io::Error: {0}")]
     IoError(#[from] std::io::Error),

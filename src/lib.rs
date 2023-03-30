@@ -349,9 +349,31 @@ impl Kaboodle {
         generate_fingerprint(&known_peers)
     }
 
+    /// Returns true if we are currently running (that is, if `.start()` has been called).
+    pub fn is_running(&self) -> bool {
+        self.self_addr.is_some()
+    }
+
     /// Get the address we use for one-to-one UDP messages, if we are currently running.
     pub fn self_addr(&self) -> Option<SocketAddr> {
         self.self_addr
+    }
+
+    /// Sets our identity payload to the given value. This can only be done while the mesh is not
+    /// running.
+    pub fn set_identity(&mut self, new_identity: Bytes) -> Result<(), KaboodleError> {
+        if self.is_running() {
+            // We can't update our identity value while we are a member of the mesh, because there
+            // is no message for "hey, my identity changed". This is just a decision made to keep
+            // things as simple as possible, and is one we can revisit later.
+            return Err(KaboodleError::InvalidOperation(String::from(
+                "Cannot change identity while the mesh is running; call .stop first",
+            )));
+        }
+
+        self.identity = new_identity;
+
+        Ok(())
     }
 
     /// Get our current list of known peers.
