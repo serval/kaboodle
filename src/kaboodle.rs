@@ -37,7 +37,7 @@ const PROTOCOL_PERIOD: Duration = Duration::from_millis(1000);
 /// How large a buffer to use when reading from our sockets; messages larger than this will be
 /// truncated.
 // TODO: Figure out what an actually optimal size would be.
-const INCOMING_BUFFER_SIZE: usize = 1024;
+const INCOMING_BUFFER_SIZE: usize = 10240;
 
 /// How recently a peer must have been put into the Known state for us to include them in the list
 /// of peers we send in response to KnownPeersRequest messages.
@@ -162,20 +162,35 @@ impl KaboodleInner {
         Ok(())
     }
 
-    /// Sends the given mesh to a single specific peer.
+    // Sends the given bytes to a single specific peer.
+    async fn send_bytes(
+        &self,
+        target_peer: &SocketAddr,
+        bytes: Vec<u8>,
+    ) -> Result<(), KaboodleError> {
+        self.sock.send_to(&bytes, target_peer).await?;
+        Ok(())
+    }
+
+    /// Sends the given message to a single specific peer.
     async fn send_msg(
         &self,
         target_peer: &SocketAddr,
         msg: &SwimMessage,
     ) -> Result<(), KaboodleError> {
         log::debug!("SEND [{target_peer}] {msg:?}");
+
+        self.send_bytes(target_peer, self.serialize_msg(msg))
+            .await?;
+        Ok(())
+    }
+
+    fn serialize_msg(&self, msg: &SwimMessage) -> Vec<u8> {
         let env = SwimEnvelope {
             identity: self.identity.clone(),
             msg: msg.clone(),
         };
-        let out_bytes = bincode::serialize(&env).expect("Failed to serialize");
-        self.sock.send_to(&out_bytes, target_peer).await?;
-        Ok(())
+        bincode::serialize(&env).expect("Failed to serialize")
     }
 
     async fn maybe_broadcast_join(&mut self) {
@@ -276,7 +291,7 @@ impl KaboodleInner {
         // Send a list of known peers to the newcomer
         // todo: we might need to only send a subset in order to keep packet size down;
         // that is a problem for another day.
-        let other_peers: HashMap<Peer, Bytes> = known_peers
+        let mut other_peers: HashMap<Peer, Bytes> = known_peers
             .iter()
             .map(|(other_peer, other_peer_info)| {
                 (other_peer.to_owned(), other_peer_info.identity.to_owned())
@@ -285,10 +300,19 @@ impl KaboodleInner {
         drop(known_peers);
 
         if !other_peers.is_empty() {
-            if let Err(err) = self
-                .send_msg(&addr, &SwimMessage::KnownPeers(other_peers))
-                .await
-            {
+            let bytes = loop {
+                let bytes = self.serialize_msg(&SwimMessage::KnownPeers(other_peers.clone()));
+                if bytes.len() < INCOMING_BUFFER_SIZE {
+                    // Great! It will fit into the receive buffers
+                    break bytes;
+                }
+
+                println!("TOO BIG {}", bytes.len());
+                // Alas, this payload is too large. Remove a peer at random and try again.
+                let peer_to_exclude = other_peers.keys().choose(&mut self.rng).unwrap().to_owned();
+                other_peers.remove(&peer_to_exclude);
+            };
+            if let Err(err) = self.send_bytes(&addr, bytes).await {
                 // Log a warning so we know something went wrong, but there's not actually
                 // anything to be done in this case -- so long as at least one other
                 // member of the mesh succesfully sends a response to the newcomer, we
