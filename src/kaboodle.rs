@@ -672,6 +672,9 @@ impl KaboodleInner {
         // In theory, we can run all of these things in parallel. This is left as an exercise for
         // the future; for now, it's nice to be able to reason about the logic of the mesh as a
         // series of individual steps happening over and over.
+        // In particular, it would be ideal if `handle_incoming_broadcasts` and
+        // `handle_incoming_messages` were pulled out of `tick` and were able to run more than once
+        // every PROTOCOL_PERIOD; this would decrease latency.
         self.maybe_broadcast_join().await;
         self.handle_incoming_broadcasts().await;
         self.handle_incoming_messages().await;
