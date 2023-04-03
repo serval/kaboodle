@@ -140,10 +140,6 @@ where
 
         true
     }
-
-    pub fn clone(&self) -> ObservableHashMap<K, V> {
-        ObservableHashMap::from(self.map.clone())
-    }
 }
 
 impl<K, V> From<ObservableHashMap<K, V>> for HashMap<K, V>

@@ -303,6 +303,9 @@ impl Kaboodle {
     /// Get our current list of known peers and their current state.
     pub async fn peer_states(&self) -> HashMap<Peer, PeerInfo> {
         let known_peers = self.known_peers.lock().await;
-        known_peers.clone().into()
+        known_peers
+            .iter()
+            .map(|(peer, peer_info)| (peer.to_owned(), peer_info.to_owned()))
+            .collect::<HashMap<Peer, PeerInfo>>()
     }
 }
