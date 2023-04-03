@@ -46,8 +46,10 @@ use observable_hashmap::ObservableHashMap;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use structs::{Fingerprint, KnownPeers, Peer, PeerInfo};
 use tokio::sync::{
-    mpsc::{Sender, UnboundedReceiver},
-    oneshot, Mutex,
+    mpsc::UnboundedReceiver,
+    oneshot::Sender,
+    oneshot::{channel, Receiver},
+    Mutex,
 };
 
 mod discovery;
@@ -167,11 +169,11 @@ impl Kaboodle {
         let Some(cancellation_tx) = self.cancellation_tx.take() else {
             // This should not happen
             log::warn!("Unable to cancel daemon thread because we have no communication channel; this is a programming error.");
-            return Err(KaboodleError::StoppingFailed(String::from("No communication channel")));
+            return Err(KaboodleError::StoppingFailed);
         };
 
-        if let Err(err) = cancellation_tx.send(()).await {
-            return Err(KaboodleError::StoppingFailed(err.to_string()));
+        if cancellation_tx.send(()).is_err() {
+            return Err(KaboodleError::StoppingFailed);
         }
 
         Ok(())
@@ -234,10 +236,8 @@ impl Kaboodle {
 
     /// Returns a one-shot channel receiver that will be invoked the next time a new peer is
     /// discovered; use this if you just want to discover the very next peer.
-    pub fn discover_next_peer(
-        &mut self,
-    ) -> Result<oneshot::Receiver<(SocketAddr, Bytes)>, KaboodleError> {
-        let (tx, rx) = oneshot::channel::<(SocketAddr, Bytes)>();
+    pub fn discover_next_peer(&mut self) -> Result<Receiver<(SocketAddr, Bytes)>, KaboodleError> {
+        let (tx, rx) = channel::<(SocketAddr, Bytes)>();
         let mut discovery_rx = self.discover_peers()?;
 
         tokio::spawn(async move {

@@ -19,6 +19,6 @@ pub enum KaboodleError {
     #[error("Unable to find interface number for the given networking interface")]
     UnableToFindInterfaceNumber,
 
-    #[error("Unable to stop: {0}")]
-    StoppingFailed(String),
+    #[error("Unable to stop")]
+    StoppingFailed,
 }
