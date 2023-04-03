@@ -22,7 +22,7 @@ use std::{
 };
 use tokio::{
     net::UdpSocket,
-    sync::{mpsc::Receiver, mpsc::Sender, Mutex},
+    sync::{oneshot::Receiver, oneshot::Sender, Mutex},
     time::sleep,
 };
 
@@ -132,7 +132,7 @@ impl KaboodleInner {
         let (broadcast_in_sock, broadcast_out_sock, broadcast_addr) =
             create_broadcast_sockets(interface, &broadcast_port)?;
 
-        let (cancellation_tx, cancellation_rx) = tokio::sync::mpsc::channel(1);
+        let (cancellation_tx, cancellation_rx) = tokio::sync::oneshot::channel();
 
         let mut instance = KaboodleInner {
             sock,
