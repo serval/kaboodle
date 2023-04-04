@@ -23,7 +23,7 @@ use std::{
 use tokio::{
     net::UdpSocket,
     sync::{oneshot::Receiver, oneshot::Sender, Mutex},
-    time::sleep,
+    time::timeout,
 };
 
 /// The minimum amount of time to wait between rounds of communication with the mesh; we keep track
@@ -702,34 +702,43 @@ impl KaboodleInner {
     /// https://en.wikipedia.org/wiki/SWIM_Protocol
     /// http://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf
     async fn tick(&mut self) {
+        let tick_start = Instant::now();
+
         // Building and maintaining the mesh consists of a number of subtasks that are repeated in
         // each tick.
         // In theory, we can run all of these things in parallel. This is left as an exercise for
         // the future; for now, it's nice to be able to reason about the logic of the mesh as a
         // series of individual steps happening over and over.
-        // In particular, it would be ideal if `handle_incoming_broadcasts` and
-        // `handle_incoming_messages` were pulled out of `tick` and were able to run more than once
-        // every PROTOCOL_PERIOD; this would decrease latency.
         self.maybe_broadcast_join().await;
-        self.handle_incoming_broadcasts().await;
-        self.handle_incoming_messages().await;
         self.handle_suspected_peers().await;
         self.ping_random_peer().await;
+
+        // The previous work we've done in this function should have completed fairly quickly, but
+        // in case something unusual happened, ensure that we let the next block of code run for a
+        // minimum amount of time, lest our inbound data start to fall behind.
+        let min_delay = Duration::from_millis(10);
+        let time_since_tick_start = Instant::now().duration_since(tick_start);
+        let required_delay = PROTOCOL_PERIOD
+            .checked_sub(time_since_tick_start)
+            .unwrap_or_default()
+            .max(min_delay);
+
+        // Continuously read data from our two inbound sockets until we hit our time limit
+        let _ = timeout(required_delay, async {
+            loop {
+                tokio::select! {
+                    _ = self.broadcast_in_sock.readable() => self.handle_incoming_broadcasts().await,
+                    _ = self.sock.readable() => self.handle_incoming_messages().await,
+                };
+            }
+        })
+        .await;
     }
 
     pub async fn run(&mut self) {
         // Run until we receive an event on our cancellation channel
         while self.cancellation_rx.try_recv().is_err() {
-            let tick_start = Instant::now();
-
             self.tick().await;
-
-            // Wait until the next tick
-            let time_since_tick_start = Instant::now().duration_since(tick_start);
-            let required_delay = PROTOCOL_PERIOD - time_since_tick_start;
-            if required_delay.as_millis() > 0 {
-                sleep(required_delay).await;
-            }
         }
     }
 }
