@@ -1,6 +1,10 @@
 # Kaboodle
 
-![](https://github.com/serval/kaboodle/actions/workflows/main.yml/badge.svg)
+![Main branch checks](https://github.com/serval/kaboodle/actions/workflows/main.yml/badge.svg)
+![Rust Version][rustc-image]
+[![crates.io][crate-image]][crate-link]
+[![Documentation][docs-image]][docs-link]
+[![Dependency Status][deps-image]][deps-link]
 
 Kaboodle is a Rust crate containing an approximate implementation of the [SWIM membership gossip protocol](http://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf), give or take some details. It can be used to discover other peers on a LAN without any central coordination, accurately keeping track of membership as machines come and go over time.
 
@@ -41,3 +45,13 @@ This project uses [just](https://github.com/casey/just) (`brew install just`) fo
 ## LICENSE
 
 [BSD-2-Clause-Patent](./LICENSE)
+
+[//]: # (badges)
+
+[rustc-image]: https://img.shields.io/badge/rustc-1.68+-blue.svg
+[crate-image]: https://img.shields.io/crates/v/violin.svg
+[crate-link]: https://crates.io/crates/kaboodle
+[docs-image]: https://docs.rs/kaboodle/badge.svg
+[docs-link]: https://docs.rs/kaboodle
+[deps-image]: https://deps.rs/repo/github/serval/kaboodle/status.svg
+[deps-link]: https://deps.rs/repo/github/serval/kaboodle
