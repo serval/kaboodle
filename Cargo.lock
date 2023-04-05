@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "kaboodle"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "atty",
@@ -257,6 +257,7 @@ dependencies = [
  "socket2",
  "thiserror",
  "tokio",
+ "violin",
 ]
 
 [[package]]
@@ -613,6 +614,15 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
+
+[[package]]
+name = "violin"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cbcbb777d8670a7421305531d26b8961af01f95e3ee302137f87df7e3573058"
+dependencies = [
+ "rand",
+]
 
 [[package]]
 name = "wasi"

@@ -32,6 +32,11 @@ println!("{fingerprint} {peers:?}");
 
 The fingerprint is an CRC-32 hash of the membership of the mesh from the current instance's perspective; all machines in the mesh should converge on the same hash value fairly rapidly. The list of peers is a `HashMap<SocketAddr, Bytes>` mapping from the peer's Kaboodle socket address to their identity. Note that the port numbers in these `SocketAddr` values is distinct from the broadcast port number: all peers listen on the broadcast port, but they also send one-to-one messages to each other on a separate port.
 
+## Determining node proximity
+
+Kaboodle comes with an optional feature called `proximity`, which uses [violin](https://github.com/kbknapp/violin) to create a notion of node proximity between peers. This feature does not produce any _additional_ network traffic, however it will increase the size of existing Kaboodle payloads, which is why it is not enabled by default.
+
+
 ## Caveats & known issues
 
 This crate is still at an early stage of active development and is likely not yet fit for production usage. Pull requests, feature requests, and feedback are all very much welcome.
