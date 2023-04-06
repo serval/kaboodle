@@ -3,8 +3,8 @@
 use crate::errors::KaboodleError;
 use crate::networking::create_broadcast_sockets;
 use crate::structs::{
-    Fingerprint, KnownPeers, Peer, PeerInfo, PeerState, ProbeResponse, SwimBroadcast, SwimEnvelope,
-    SwimMessage,
+    Fingerprint, KnownPeers, Peer, PeerInfo, PeerState, ProbeResponse, Proximity, SwimBroadcast,
+    SwimEnvelope, SwimMessage,
 };
 use bytes::Bytes;
 use if_addrs::Interface;
@@ -103,6 +103,8 @@ pub struct KaboodleInner {
     /// Small payload to uniquely identity this instance to its peers; used to allow consumers of
     /// Kaboodle to keep track of a durable instance identity across sessions.
     identity: Bytes,
+    /// Proximity information for any peers in the network (if proximity feature is enabled).
+    proximity: Proximity,
 }
 
 impl KaboodleInner {
@@ -134,6 +136,11 @@ impl KaboodleInner {
 
         let (cancellation_tx, cancellation_rx) = tokio::sync::oneshot::channel();
 
+        #[cfg(feature = "proximity")]
+        let proximity = Proximity::new(identity);
+        #[cfg(not(feature = "proximity"))]
+        let proximity = {};
+
         let mut instance = KaboodleInner {
             sock,
             self_addr,
@@ -146,6 +153,7 @@ impl KaboodleInner {
             last_broadcast_time: None,
             cancellation_rx,
             identity,
+            proximity,
         };
 
         tokio::spawn(async move {
@@ -283,9 +291,15 @@ impl KaboodleInner {
             log::debug!("Not sending known peers to new peer in the hopes that someone else will");
             return;
         }
+        // Coordinates are only added if the proximity feature is enabled
+        #[cfg(feature = "proximity")]
+        let coord = Some(self.proximity.node.coordinate().clone());
+        #[cfg(not(feature = "proximity"))]
+        let coord = None;
 
         let bytes = bincode::serialize(&ProbeResponse {
             identity: self.identity.clone(),
+            coord,
         })
         .expect("Failed to serialize probe response");
 
