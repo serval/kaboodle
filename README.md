@@ -54,7 +54,7 @@ This project uses [just](https://github.com/casey/just) (`brew install just`) fo
 [//]: # (badges)
 
 [rustc-image]: https://img.shields.io/badge/rustc-1.68+-blue.svg
-[crate-image]: https://img.shields.io/crates/v/violin.svg
+[crate-image]: https://img.shields.io/crates/v/kaboodle.svg
 [crate-link]: https://crates.io/crates/kaboodle
 [docs-image]: https://docs.rs/kaboodle/badge.svg
 [docs-link]: https://docs.rs/kaboodle
