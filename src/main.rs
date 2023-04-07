@@ -117,7 +117,7 @@ async fn main() {
         let mut did_emit_output = false;
 
         // Check for new peers
-        if let Ok((addr, identity_bytes)) = discovery_rx.try_recv() {
+        while let Ok((addr, identity_bytes)) = discovery_rx.try_recv() {
             let identity = String::from_utf8(identity_bytes.to_vec())
                 .map(|id| format!(" ({id})"))
                 .unwrap_or_default();
@@ -129,7 +129,7 @@ async fn main() {
         }
 
         // Check for departed peers
-        if let Ok(departed_peer) = departure_rx.try_recv() {
+        while let Ok(departed_peer) = departure_rx.try_recv() {
             if should_show_spinner && !did_emit_output {
                 print!("\x0D\x0D"); // delete the last frame of the spinner
                 did_emit_output = true;
