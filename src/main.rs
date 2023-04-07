@@ -176,6 +176,8 @@ async fn main() {
                 spinner_frame = (spinner_frame + 1) % num_frames;
                 sleep(Duration::from_millis(100));
             }
+        } else {
+            sleep(Duration::from_millis(1000));
         }
     }
 }
