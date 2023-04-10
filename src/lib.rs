@@ -276,6 +276,11 @@ impl Kaboodle {
         self.self_addr
     }
 
+    /// Get the network interface that we are communicating on.
+    pub fn interface(&self) -> Interface {
+        self.interface.clone()
+    }
+
     /// Sets our identity payload to the given value. This can only be done while the mesh is not
     /// running.
     pub fn set_identity(&mut self, new_identity: Bytes) -> Result<(), KaboodleError> {

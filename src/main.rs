@@ -102,6 +102,8 @@ async fn main() {
         "Identity: {}\x1B]0;{self_addr}\x07",
         args.identity.unwrap_or_else(|| String::from("(none)")),
     );
+    let interface = kaboodle.interface();
+    println!("Interface: {} ({})", interface.name, interface.ip());
     println!("Address: {self_addr}");
     println!("Port: {}", args.port);
 
