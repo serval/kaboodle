@@ -1,4 +1,10 @@
-use std::{io::Write, process::exit, thread::sleep, time::Duration};
+use std::{
+    io::{stdin, Read, Write},
+    process::exit,
+    sync::mpsc::{self, Receiver},
+    thread::sleep,
+    time::Duration,
+};
 
 use clap::Parser;
 use dotenvy::dotenv;
@@ -115,6 +121,12 @@ async fn main() {
     let mut spinner_frame: usize = 0;
     let should_show_spinner = atty::is(atty::Stream::Stdin);
 
+    let rx = if should_show_spinner {
+        Some(spawn_stdin_reader())
+    } else {
+        None
+    };
+
     loop {
         let mut did_emit_output = false;
 
@@ -145,22 +157,56 @@ async fn main() {
         while let Ok(fingerprint) = fingerprint_rx.try_recv() {
             new_fingerprint = Some(fingerprint);
         }
-        if let Some(fingerprint) = new_fingerprint {
+        let should_dump = rx
+            .as_ref()
+            .map(|rx| rx.try_recv().ok())
+            .unwrap_or_default()
+            .is_some();
+        if new_fingerprint.is_some() || should_dump {
+            let fingerprint = match new_fingerprint {
+                Some(fingerprint) => fingerprint,
+                None => kaboodle.fingerprint().await,
+            };
             if should_show_spinner && !did_emit_output {
                 print!("\x0D\x0D"); // delete the last frame of the spinner
             }
-
             let known_peers = kaboodle.peer_states().await;
             let num_peers = known_peers.len();
             let title = format!("\x1B]0;{self_addr} {num_peers} {fingerprint:08x}\x07");
             println!(
                 "Mesh fingerprint is now {fingerprint:08x} with {num_peers} peers in mesh:{title}"
             );
-            for (peer, peer_info) in known_peers.iter() {
-                let identity = String::from_utf8(peer_info.identity.to_vec())
-                    .map(|id| format!(" ({id})"))
+
+            let mut peers: Vec<_> = known_peers.keys().collect();
+            peers.sort();
+
+            for peer in peers.into_iter() {
+                let peer_info = known_peers.get(peer).unwrap();
+                let identity = if peer_info.identity.is_empty() {
+                    String::from("")
+                } else {
+                    String::from_utf8(peer_info.identity.to_vec())
+                        .map(|id| format!(" ({id})"))
+                        .unwrap_or_default()
+                };
+                let self_identifier = if peer == self_addr {
+                    String::from(" -- (this is us)")
+                } else {
+                    String::from("")
+                };
+                let latency = peer_info
+                    .latency
+                    .map(|latency| {
+                        let latency = latency.as_millis();
+                        if latency < 1 {
+                            " -- < 1ms".to_string()
+                        } else {
+                            format!(" -- {}ms", latency as u32)
+                        }
+                    })
                     .unwrap_or_default();
-                println!("+ {peer}{identity}");
+
+                println!("+ {peer}{identity}{latency}{self_identifier}");
             }
         }
 
@@ -182,4 +228,17 @@ async fn main() {
             sleep(Duration::from_millis(1000));
         }
     }
+}
+
+/// returns a channel that receives any characters that are entered on stdin.
+fn spawn_stdin_reader() -> Receiver<char> {
+    let (tx, rx) = mpsc::channel::<char>();
+    std::thread::spawn(move || {
+        let mut character = [0];
+        while stdin().read(&mut character).is_ok() {
+            let _ = tx.send(character[0] as char);
+        }
+    });
+
+    rx
 }
