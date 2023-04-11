@@ -1,6 +1,11 @@
 use bytes::Bytes;
 use serde_derive::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt::Display, net::SocketAddr, time::Instant};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
 use crate::observable_hashmap::ObservableHashMap;
 
@@ -13,6 +18,7 @@ pub type KnownPeers = ObservableHashMap<Peer, PeerInfo>;
 pub struct PeerInfo {
     pub identity: Bytes,
     pub state: PeerState,
+    pub latency: Option<Duration>,
 }
 
 /// PeerState represents our knowledge about the status of a given peer in the network at any given

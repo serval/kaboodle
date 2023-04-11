@@ -125,6 +125,7 @@ impl KaboodleInner {
             PeerInfo {
                 identity: identity.clone(),
                 state: PeerState::Known(Instant::now()),
+                latency: None,
             },
         );
 
@@ -258,11 +259,14 @@ impl KaboodleInner {
                     }
                     log::debug!("Got a join from {addr}");
 
+                    let mut known_peers = self.known_peers.lock().await;
                     let peer_info = PeerInfo {
                         identity: identity.clone(),
                         state: PeerState::Known(Instant::now()),
+                        latency: known_peers
+                            .get(&addr)
+                            .and_then(|peer_info| peer_info.latency),
                     };
-                    let mut known_peers = self.known_peers.lock().await;
                     let is_new_peer = known_peers.insert(addr, peer_info).is_none();
                     drop(known_peers);
 
@@ -379,6 +383,7 @@ impl KaboodleInner {
             let peer_info = PeerInfo {
                 identity: env.identity.clone(),
                 state: PeerState::Known(Instant::now()),
+                latency: known_peers.get(&sender).and_then(calculate_peer_latency),
             };
             known_peers.insert(sender, peer_info);
             drop(known_peers);
@@ -433,6 +438,7 @@ impl KaboodleInner {
                             PeerInfo {
                                 identity: identity.clone(),
                                 state: PeerState::Known(too_old_to_share_timestamp),
+                                latency: None,
                             },
                         );
                     }
@@ -741,4 +747,34 @@ impl KaboodleInner {
             self.tick().await;
         }
     }
+}
+
+fn calculate_peer_latency(peer_info: &PeerInfo) -> Option<Duration> {
+    let ping_send_time = match peer_info.state {
+        PeerState::WaitingForIndirectPing(ping_send_time)
+        | PeerState::WaitingForPing(ping_send_time) => ping_send_time,
+        _ => {
+            // We weren't expecting to hear from this peer, so we have no start time to compare
+            // against; just return the previously known latency value, if there is one.
+            return peer_info.latency;
+        }
+    };
+
+    let ping_latency = Instant::now()
+        .checked_duration_since(ping_send_time)
+        .unwrap();
+    let Some(prev_latency) = peer_info.latency else {
+        // No previous latency, so just return this new value directly
+        return Some(ping_latency);
+    };
+
+    // Mix the new latency into the old one, giving 80% weight to the new value; this should smooth
+    // out any wild swings while remaining fairly responsive to changing conditions.
+    const MOST_RECENT_WEIGHT: f64 = 0.8;
+    let ping_latency_ms = ping_latency.as_millis() as f64;
+    let prev_latency_ms = prev_latency.as_millis() as f64;
+    let updated_latency_ms =
+        (ping_latency_ms * MOST_RECENT_WEIGHT) + (prev_latency_ms * (1.0 - MOST_RECENT_WEIGHT));
+
+    Some(Duration::from_millis(updated_latency_ms as u64))
 }
