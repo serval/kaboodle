@@ -15,8 +15,14 @@ use tokio::net::UdpSocket;
 /// truncated.
 const INCOMING_BUFFER_SIZE: usize = 1024;
 
-/// How often to re-broadcast our Probe message if we don't get a response.
-const REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
+/// How long to wait before we re-broadcast our Probe message if we don't get a response.
+const START_REBROADCAST_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// How much longer to wait for subsequent re-broadcasts.
+const REBROADCAST_INTERVAL_MULTIPLIER: f64 = 1.25;
+
+/// Maximum amount of time to ever wait in between re-broadcasts.
+const MAX_REBROADCAST_INTERVAL: Duration = Duration::from_millis(10000);
 
 /// Discovers one member of the mesh on the given port and interface, without actually joining
 /// the mesh. Use this if you simply need to discover a member of the mesh but do not want to
@@ -35,13 +41,15 @@ pub async fn discover_mesh_member(
     let (_broadcast_in_sock, broadcast_out_sock, broadcast_addr) =
         create_broadcast_sockets(&interface, &broadcast_port)?;
 
+    let mut rebroadcast_interval = START_REBROADCAST_INTERVAL;
+
     let mut buf = [0; INCOMING_BUFFER_SIZE];
-    let mut last_broadcast_time = Instant::now() - REBROADCAST_INTERVAL - Duration::from_secs(1);
+    let mut last_broadcast_time = Instant::now() - rebroadcast_interval - Duration::from_secs(1);
     let out_bytes =
         bincode::serialize(&SwimBroadcast::Probe(self_addr)).expect("Failed to serialize");
 
     loop {
-        if last_broadcast_time <= Instant::now() - REBROADCAST_INTERVAL {
+        if last_broadcast_time <= Instant::now() - rebroadcast_interval {
             log::debug!("Broadcasting probe message");
             last_broadcast_time = Instant::now();
             broadcast_out_sock
@@ -49,9 +57,15 @@ pub async fn discover_mesh_member(
                 .await?;
         }
 
-        let res = match timeout(REBROADCAST_INTERVAL, sock.recv_from(&mut buf)).await {
+        let res = match timeout(rebroadcast_interval, sock.recv_from(&mut buf)).await {
             Err(_) => {
                 // No response in time; send another probe out and try again
+                let interval_ms =
+                    (rebroadcast_interval.as_millis() as f64) * REBROADCAST_INTERVAL_MULTIPLIER;
+                rebroadcast_interval = Duration::min(
+                    MAX_REBROADCAST_INTERVAL,
+                    Duration::from_millis(interval_ms as u64),
+                );
                 continue;
             }
             Ok(res) => res,
