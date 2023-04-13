@@ -7,7 +7,7 @@ on the SWIM gossip protocol.
 """
 edition = "2021"
 homepage = "https://serval.sh"
-keywords = ["peer-to-peer", "mesh", "networking", "swim", "gossip"]
+keywords = ["network-programming"]
 license = "BSD-2-Clause-Patent"
 name = "kaboodle"
 readme = "README.md"
