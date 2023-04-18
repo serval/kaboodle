@@ -20,6 +20,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::{
     net::UdpSocket,
     sync::{oneshot::Receiver, oneshot::Sender, Mutex},
@@ -83,6 +84,7 @@ pub fn generate_fingerprint(known_peers: &KnownPeers) -> Fingerprint {
 pub struct StartResult {
     pub self_addr: SocketAddr,
     pub cancellation_tx: Sender<()>,
+    pub ping_request_tx: UnboundedSender<SocketAddr>,
 }
 
 pub struct KaboodleInner {
@@ -100,6 +102,8 @@ pub struct KaboodleInner {
     last_broadcast_time: Option<Instant>,
     /// Whether we should stop running; takes effect in the next tick
     cancellation_rx: Receiver<()>,
+    /// Receives a stream of SocketAddrs to ping in the hopes of discovering a new peer
+    ping_request_rx: UnboundedReceiver<SocketAddr>,
     /// Small payload to uniquely identity this instance to its peers; used to allow consumers of
     /// Kaboodle to keep track of a durable instance identity across sessions.
     identity: Bytes,
@@ -134,6 +138,7 @@ impl KaboodleInner {
             create_broadcast_sockets(interface, &broadcast_port)?;
 
         let (cancellation_tx, cancellation_rx) = tokio::sync::oneshot::channel();
+        let (ping_request_tx, ping_request_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut instance = KaboodleInner {
             sock,
@@ -146,6 +151,7 @@ impl KaboodleInner {
             curious_peers: HashMap::new(),
             last_broadcast_time: None,
             cancellation_rx,
+            ping_request_rx,
             identity,
         };
 
@@ -156,6 +162,7 @@ impl KaboodleInner {
         Ok(StartResult {
             self_addr,
             cancellation_tx,
+            ping_request_tx,
         })
     }
 
@@ -521,6 +528,14 @@ impl KaboodleInner {
         }
     }
 
+    async fn handle_incoming_ping_requests(&mut self) {
+        while let Ok(target_peer) = self.ping_request_rx.try_recv() {
+            if let Err(err) = self.send_msg(&target_peer, &SwimMessage::Ping).await {
+                log::warn!("Failed to ping requested address: {err}");
+            }
+        }
+    }
+
     async fn handle_suspected_peers(&mut self) {
         // Handle suspected peers
         // - for each suspected peer P,
@@ -718,6 +733,7 @@ impl KaboodleInner {
         self.maybe_broadcast_join().await;
         self.handle_suspected_peers().await;
         self.ping_random_peer().await;
+        self.handle_incoming_ping_requests().await;
 
         // The previous work we've done in this function should have completed fairly quickly, but
         // in case something unusual happened, ensure that we let the next block of code run for a
