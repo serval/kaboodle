@@ -1,5 +1,6 @@
 use std::{
     io::{stdin, Read, Write},
+    net::SocketAddr,
     process::exit,
     sync::mpsc::{self, Receiver},
     thread::sleep,
@@ -44,6 +45,8 @@ struct Args {
     port: u16,
     #[arg(long, default_value = "false")]
     probe: bool,
+    #[arg(long)]
+    ping: Vec<SocketAddr>,
 }
 
 #[tokio::main]
@@ -112,6 +115,17 @@ async fn main() {
     println!("Interface: {} ({})", interface.name, interface.ip());
     println!("Address: {self_addr}");
     println!("Port: {}", args.port);
+
+    if !args.ping.is_empty() {
+        println!("Pinging the following peers to bootstrap:");
+        for addr in args.ping.iter() {
+            println!("- {addr}");
+        }
+        if let Err(err) = kaboodle.ping_addrs(args.ping).await {
+            eprintln!("Error pinging peers: {err}");
+            exit(0);
+        }
+    }
 
     let mut discovery_rx = kaboodle.discover_peers().unwrap();
     let mut departure_rx = kaboodle.discover_departures().unwrap();

@@ -46,7 +46,7 @@ use observable_hashmap::ObservableHashMap;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use structs::{Fingerprint, KnownPeers, Peer, PeerInfo};
 use tokio::sync::{
-    mpsc::UnboundedReceiver,
+    mpsc::{UnboundedReceiver, UnboundedSender},
     oneshot::Sender,
     oneshot::{channel, Receiver},
     Mutex,
@@ -67,6 +67,7 @@ pub struct Kaboodle {
     broadcast_port: u16,
     self_addr: Option<SocketAddr>,
     cancellation_tx: Option<Sender<()>>,
+    ping_request_tx: Option<UnboundedSender<SocketAddr>>,
     discovery_tx: Arc<Mutex<DiscoverySenders>>,
     departure_tx: Arc<Mutex<DepartureSenders>>,
     fingerprint_tx: Arc<Mutex<FingerprintSenders>>,
@@ -127,6 +128,7 @@ impl Kaboodle {
             // These will get set whenever `start` is called:
             self_addr: None,
             cancellation_tx: None,
+            ping_request_tx: None,
         })
     }
 
@@ -148,6 +150,7 @@ impl Kaboodle {
 
         self.self_addr = Some(result.self_addr);
         self.cancellation_tx = Some(result.cancellation_tx);
+        self.ping_request_tx = Some(result.ping_request_tx);
 
         Ok(())
     }
@@ -257,6 +260,40 @@ impl Kaboodle {
         });
 
         Ok(rx)
+    }
+
+    /// Sends ping requests to the given addresses. This can be used to bootstrap the mesh in
+    /// environments where multicast is not available, assuming you have another mechanism for
+    /// discovering this list of peers.
+    pub async fn ping_addrs(&mut self, addrs: Vec<SocketAddr>) -> Result<(), KaboodleError> {
+        let Some(ping_request_tx) = self.ping_request_tx.as_ref() else {
+            return Err(KaboodleError::InvalidOperation(String::from("Cannot ping while we are not started")));
+        };
+
+        log::debug!("Manually pinging peers: {addrs:?}");
+
+        let known_peers = self.known_peers.lock().await;
+        let addrs: Vec<_> = addrs
+            .into_iter()
+            .filter(|addr| !known_peers.contains_key(addr))
+            .collect();
+        drop(known_peers);
+
+        for addr in addrs.into_iter() {
+            // Knowing a potential peer's SocketAddr is not enough to add them to our known peers
+            // list -- we need their identity payload as well.
+            // When we receive a message from a peer, we add them to our known peers list (if
+            // needed) and send back an ack. This ack includes the identity payload, which means
+            // that all we need to do in order to bootstrap a potential peer from a SocketAddr is to
+            // send them a ping.
+            if ping_request_tx.send(addr).is_err() {
+                return Err(KaboodleError::InvalidOperation(String::from(
+                    "Cannot send ping request because the receiver has gone away",
+                )));
+            }
+        }
+
+        Ok(())
     }
 
     /// Calculate an CRC-32 hash of the current list of peers. The list is sorted before hashing, so
