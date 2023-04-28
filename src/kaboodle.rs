@@ -14,9 +14,7 @@ use rand::{
     Rng,
 };
 use rand_chacha::ChaChaRng;
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use std::net::Ipv6Addr;
-use std::num::NonZeroU32;
+
 use std::{
     collections::HashMap,
     net::SocketAddr,
