@@ -362,8 +362,6 @@ impl KaboodleInner {
         }
 
         // Send a list of known peers to the newcomer
-        // todo: we might need to only send a subset in order to keep packet size down;
-        // that is a problem for another day.
         let known_peers = self.known_peers.lock().await;
         let mut other_peers: HashMap<Peer, Bytes> = known_peers
             .iter()
