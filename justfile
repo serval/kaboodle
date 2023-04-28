@@ -58,6 +58,11 @@ set positional-arguments
 tailscale *args:
     #!/usr/bin/env bash
     set -e
+    if [ $(uname) == "Darwin" ]; then
+        echo "Kaboodle doesn't currently work properly on a Mac when run against Tailscale using IPv6; aborting."
+        exit 1
+    fi
+
     if ! hash tailscale 2>/dev/null; then
         echo This command requires the Tailscale CLI tool to be installed:
         echo https://tailscale.com/kb/1080/cli/

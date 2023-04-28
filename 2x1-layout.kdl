@@ -1,12 +1,12 @@
 layout {
-    pane split_direction="vertical" {
+    pane split_direction="horizontal" {
         pane {
-            command "cargo"
-            args "run" "--" "--identity" "left"
+            command "just"
+            args "tailscale"
         }
         pane {
-            command "cargo"
-            args "run" "--" "--identity" "right"
+            command "just"
+            args "tailscale"
         }
     }
 }

@@ -14,6 +14,9 @@ use rand::{
     Rng,
 };
 use rand_chacha::ChaChaRng;
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use std::net::Ipv6Addr;
+use std::num::NonZeroU32;
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -118,9 +121,26 @@ impl KaboodleInner {
     ) -> Result<StartResult, KaboodleError> {
         // Set up our main communications socket
         let sock = {
+            /*
+            let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+            sock.set_nonblocking(true)?;
+            sock.set_only_v6(true)?;
+            // sock.set_reuse_address(true)?;
+            // sock.set_reuse_port(true)?;
+            println!(
+                "WANT BIND {} {:?}",
+                interface.ip(),
+                interface.index.and_then(NonZeroU32::new)
+            );
+            // sock.bind_device_by_index(interface.index.and_then(NonZeroU32::new))?;
+            sock.bind(&SockAddr::from(SocketAddr::new(interface.ip(), 0)))?;
+
+            UdpSocket::from_std(sock.into())?
+            */
             let ip = interface.ip();
             UdpSocket::bind(format!("{ip}:0")).await?
         };
+        println!("ERROR {:?}", sock.take_error());
 
         // Put our socket address into the known peers list
         let self_addr = sock.local_addr().unwrap();
@@ -573,6 +593,8 @@ impl KaboodleInner {
                     if Instant::now().duration_since(ping_sent) < PING_TIMEOUT {
                         continue;
                     };
+
+                    log::debug!("{peer} did not respond to ping");
 
                     let indirect_ping_peers: Vec<&Peer> = non_suspected_peers
                         .choose_multiple(&mut self.rng, NUM_INDIRECT_PING_PEERS)
