@@ -254,10 +254,13 @@ impl KaboodleInner {
                         continue;
                     };
 
-                    // Note: unclear whether we should unilaterally trust this but ok
-                    log::debug!("Removing peer that we were told has failed {peer}");
                     let mut known_peers = self.known_peers.lock().await;
-                    known_peers.remove(&peer);
+                    if known_peers.contains_key(&sender) {
+                        log::debug!("Removing peer that we were told has failed {peer}");
+                        known_peers.remove(&peer);
+                    } else {
+                        log::debug!("{sender} told us that {peer} failed, but we are ignoring it because sender is not a mesh member and may be in a bad state");
+                    }
                     drop(known_peers);
                 }
                 SwimBroadcast::Join { addr, identity } => {
